@@ -192,6 +192,8 @@ fn run_frame_allocator_self_test(
             boot_ticks, "Self-test error: frame count did not match after release"
         );
     }
+
+    unsafe { core::arch::asm!("wfe"); }
 }
 
 /// Parks the core forever.

@@ -23,7 +23,7 @@ const BARE_METAL_PACKAGES: [&str; 8] = [
 ];
 
 const QEMU_PROGRAM: &str = "qemu-system-aarch64";
-const QEMU_CORE_COUNT: &str = "4";
+const QEMU_CORE_COUNT: &str = "8";
 const QEMU_MEMORY: &str = "512M";
 
 fn main() -> ExitCode {

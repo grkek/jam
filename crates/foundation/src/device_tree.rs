@@ -31,7 +31,7 @@ const LARGEST_CELL_COUNT: usize = 2;
 
 const EMPTY_NAME: &[u8] = &[];
 const MEMORY_NODE_NAME_PREFIX: &[u8] = b"memory";
-const POWER_STATE_COORDINATION_INTERFACE_NODE_NAME: &[u8] = b"power_state_coordination_interface";
+const POWER_STATE_COORDINATION_INTERFACE_NODE_NAME: &[u8] = b"psci";
 const CPUS_NODE_NAME: &[u8] = b"cpus";
 const CPU_NODE_NAME_PREFIX: &[u8] = b"cpu@";
 const ADDRESS_CELLS_PROPERTY: &[u8] = b"#address-cells";
