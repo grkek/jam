@@ -2,7 +2,7 @@
 
 ENTRY(_start)
 
-KERNEL_LOAD_ADDRESS = 0x40080000;
+KERNEL_LOAD_ADDRESS = 0x40200000;
 PAGE_SIZE           = 4096;
 CORE_COUNT          = 4;
 BOOT_STACK_SIZE     = 16384;
@@ -38,6 +38,9 @@ SECTIONS
         . += CORE_COUNT * BOOT_STACK_SIZE;
         __boot_stacks_top = .;
     }
+
+    . = ALIGN(PAGE_SIZE);
+    __kernel_end = .;
 
     /DISCARD/ : { *(.comment) *(.eh_frame*) }
 }

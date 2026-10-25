@@ -5,11 +5,16 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+extern crate std;
+
 pub mod address;
 pub mod autopsy;
 pub mod cause;
 pub mod configuration;
+pub mod device_tree;
 pub mod farewell;
+pub mod frame_bitmap;
 pub mod message_layout;
 pub mod node_identifier;
 pub mod resource_budget;

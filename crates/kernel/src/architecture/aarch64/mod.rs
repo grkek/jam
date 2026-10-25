@@ -7,3 +7,4 @@ pub mod generic_timer;
 pub mod interrupt_controller;
 pub mod memory_management_unit;
 pub mod power_interface;
+pub mod time;

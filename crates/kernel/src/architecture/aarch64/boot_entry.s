@@ -4,6 +4,9 @@
 	.section .text.boot
 	.global _start
 _start:
+	// Keep the device tree address the firmware passed in x0.
+	mov	x19, x0
+
 	// Any core other than core zero parks until the kernel brings it up.
 	mrs	x0, mpidr_el1
 	and	x0, x0, #0xff
@@ -26,6 +29,8 @@ clear_bss:
 	b	clear_bss
 bss_cleared:
 
+	// kernel_main(device_tree_address)
+	mov	x0, x19
 	bl	kernel_main
 
 park:
