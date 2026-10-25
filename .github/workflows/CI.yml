@@ -30,4 +30,4 @@ jobs:
         run: cargo test
 
       - name: Build for AArch64 via xtask
-        run: cargo xtask -- build
+        run: cargo xtask build
