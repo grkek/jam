@@ -12,7 +12,7 @@ JAM a.k.a Just Another Microkernel is a fault-tolerant, actor-based software for
 
 | Path | Purpose |
 |---|---|
-| `crates/foundation` | Shared vocabulary: addresses, causes, farewells, limits, system call ABI. No `unsafe`, testable on the host. |
+| `crates/foundation` | Shared vocabulary: addresses, causes, farewells, resource budgets, system call ABI. No `unsafe`, testable on the host. |
 | `crates/kernel` | The microkernel. Architecture-specific code lives only in `architecture/aarch64`. |
 | `crates/runtime` | Library linked into every actor: inbox, typed messages, allocator, panic handling. |
 | `services/` | Ordinary actors: genesis, registry, observatory, distribution, drivers. |

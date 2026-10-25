@@ -14,6 +14,9 @@ Please note that this project is released with a [Contributor Code of Conduct](c
 6. **Everything public is documented.** `missing_docs` is denied.
 7. **Vocabulary is fixed** by `documentation/decisions/0001-vocabulary.md`.
    Do not reintroduce Erlang or POSIX terms.
+8. **Name fields after their type.** A field holding an `Address` is `address`
+   (or ends in `_address`, such as `requester_address`). A `NodeIdentifier` is
+   `node_identifier`.
 
 1. [Fork it](https://github.com/your-username/jam/fork)
 2. Create your feature branch (`git checkout -b my-new-feature`)
