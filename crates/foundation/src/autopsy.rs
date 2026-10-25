@@ -27,7 +27,7 @@ pub struct FaultDetails {
 /// Facts the kernel observed about an actor's life and end. The actor cannot forge any of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Autopsy {
-    /// The actor that ended.
+    /// Address of the actor that ended.
     pub address: Address,
     /// Why it ended.
     pub cause: Cause,

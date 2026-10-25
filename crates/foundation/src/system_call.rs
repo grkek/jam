@@ -1,14 +1,17 @@
 //! The contract between actors and the kernel, expressed in registers.
 //!
 //! An actor places the call number in register `x8` and arguments in `x0` to `x5`,
-//! then executes `svc`. The result returns in `x0`.
+//! then executes `svc`. The kernel answers with a `SystemCallStatus` in `x0` and,
+//! for calls that produce one, a value in `x1`.
 
 /// Register that carries the system call number.
 pub const SYSTEM_CALL_NUMBER_REGISTER: u8 = 8;
 /// How many argument registers (`x0` to `x5`) a call may use.
 pub const ARGUMENT_REGISTER_COUNT: usize = 6;
-/// Register that carries the result.
-pub const RESULT_REGISTER: u8 = 0;
+/// Register that carries the `SystemCallStatus`.
+pub const STATUS_REGISTER: u8 = 0;
+/// Register that carries the value a call produces, if any.
+pub const VALUE_REGISTER: u8 = 1;
 
 /// Every operation an actor can ask the kernel to perform.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +49,14 @@ pub enum SystemCall {
     DrainChronicle = 14,
     /// Turn chronicle event classes on or off.
     ConfigureChronicle = 15,
+    /// Create a draft Scroll and receive a writable view of it.
+    CreateScroll = 16,
+    /// Seal a draft Scroll. From then on nobody can write to it, including its creator.
+    SealScroll = 17,
+    /// Map a sealed Scroll read-only into the calling actor.
+    MapScroll = 18,
+    /// Drop the calling actor's reference to a Scroll.
+    ReleaseScroll = 19,
 }
 
 /// A system call number the kernel does not recognise.
@@ -57,7 +68,7 @@ pub struct UnknownSystemCall {
 
 impl SystemCall {
     /// Every system call, in numeric order.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 20] = [
         Self::SpawnActor,
         Self::TerminateActor,
         Self::WatchActor,
@@ -74,6 +85,10 @@ impl SystemCall {
         Self::ReadCoreCensus,
         Self::DrainChronicle,
         Self::ConfigureChronicle,
+        Self::CreateScroll,
+        Self::SealScroll,
+        Self::MapScroll,
+        Self::ReleaseScroll,
     ];
 
     /// The number placed in the system call register.

@@ -9,13 +9,13 @@ pub enum Cause {
     Completed,
     /// The actor's parent (or Genesis) terminated it.
     Terminated {
-        /// The actor that requested the termination.
-        address: Address,
+        /// Address of the actor that requested the termination.
+        requester_address: Address,
     },
     /// A tethered actor ended abnormally and the failure travelled along the tether.
     Tethered {
-        /// The actor whose failure caused this one to fall.
-        address: Address,
+        /// Address of the actor whose failure caused this one to fall.
+        origin_address: Address,
     },
     /// The actor panicked.
     Panicked,
@@ -56,8 +56,8 @@ mod tests {
         assert!(!Cause::Completed.is_abnormal());
         assert!(Cause::Panicked.is_abnormal());
         assert!(Cause::Faulted.is_abnormal());
-        assert!(Cause::Terminated { address: someone }.is_abnormal());
-        assert!(Cause::Tethered { address: someone }.is_abnormal());
+        assert!(Cause::Terminated { requester_address: someone }.is_abnormal());
+        assert!(Cause::Tethered { origin_address: someone }.is_abnormal());
         assert!(Cause::NoSuchActor.is_abnormal());
     }
 }

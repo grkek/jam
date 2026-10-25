@@ -55,7 +55,6 @@ mod tests {
     #[test]
     fn default_configuration_is_the_safest_choice() {
         let configuration = Configuration::default();
-        
         assert_eq!(configuration.overflow_policy, OverflowPolicy::EndActor);
         assert_eq!(configuration.lineage, Lineage::Untethered);
         assert_eq!(configuration.survival, Survival::CascadesWithParent);

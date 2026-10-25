@@ -13,21 +13,13 @@ pub mod scheduling;
 pub mod synchronization;
 pub mod system_calls;
 
-/// First instruction stream executed after firmware hands over control.
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    halt()
-}
+use core::fmt::Write;
 
-/// Parks the core forever.
-fn halt() -> ! {
-    loop {
-        core::hint::spin_loop();
-    }
-}
+use architecture::aarch64::early_console::EarlyConsole;
 
-/// Placeholder until the observation layer can record the fault.
+/// Reports the panic on the serial console, then parks the core.
 #[panic_handler]
-fn on_kernel_panic(_panic_information: &core::panic::PanicInfo) -> ! {
-    halt()
+fn on_kernel_panic(panic_information: &core::panic::PanicInfo) -> ! {
+    let _ = writeln!(EarlyConsole, "\nKERNEL PANIC: {panic_information}");
+    boot::entry::halt()
 }

@@ -50,7 +50,7 @@ impl Default for Testimony {
 /// Delivered to every watcher when an actor ends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Farewell {
-    /// The actor that ended.
+    /// Address of the actor that ended.
     pub address: Address,
     /// Why it ended, as established by the kernel.
     pub cause: Cause,
@@ -82,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn farewell_carries_address_cause_and_testimony() {
+    fn farewell_carries_actor_cause_and_testimony() {
         let address = Address::Local(LocalAddress::new(2, 5));
         let farewell = Farewell {
             address,
