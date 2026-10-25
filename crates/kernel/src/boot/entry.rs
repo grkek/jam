@@ -134,7 +134,11 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     information!(console, boot_ticks, "Done.");
 
-    halt()
+    loop {
+        unsafe {
+            core::arch::asm!("wfe");
+        }
+    }
 }
 
 /// Allocates and releases frames to prove the allocator still works with the MMU on.
@@ -192,8 +196,6 @@ fn run_frame_allocator_self_test(
             boot_ticks, "Self-test error: frame count did not match after release"
         );
     }
-
-    unsafe { core::arch::asm!("wfe"); }
 }
 
 /// Parks the core forever.

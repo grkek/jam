@@ -7,7 +7,6 @@ use core::{
 
 use foundation::device_tree::DeviceTreeSummary;
 
-use super::entry::halt;
 use crate::{
     architecture::aarch64::{
         early_console::EarlyConsole,
@@ -63,7 +62,11 @@ pub fn start_secondary_cores(
     while ONLINE_CORE_COUNT.load(Ordering::Acquire) < requested_core_count
         && time::read_counter_value().wrapping_sub(wait_started_ticks) < timeout_ticks
     {
-        core::hint::spin_loop();
+        // Sleep in low-power state until an event (sev) wakes us up, 
+        // or the check loop re-evaluates on timer ticks/spurious wakeups.
+        unsafe {
+            core::arch::asm!("wfe");
+        }
     }
 
     let online_core_count = ONLINE_CORE_COUNT.load(Ordering::Acquire) + 1;
@@ -92,5 +95,15 @@ pub extern "C" fn secondary_main(_core_index: usize, translation_table_address: 
     switch_on_memory_management_unit(translation_table_address);
 
     ONLINE_CORE_COUNT.fetch_add(1, Ordering::Release);
-    halt();
+
+    // Signal the primary core waiting in WFE that a core has arrived
+    unsafe {
+        core::arch::asm!("sev");
+    }
+
+    loop {
+        unsafe {
+            core::arch::asm!("wfe");
+        }
+    }
 }
