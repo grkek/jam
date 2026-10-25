@@ -6,7 +6,7 @@ use super::device_tree::load_device_tree;
 use super::secondary_cores::start_secondary_cores;
 use crate::{
     architecture::aarch64::{
-        early_console::EarlyConsole, exceptions::install_exception_vectors, processor, time
+        early_console::EarlyConsole, exceptions::install_exception_vectors, processor, time,
     },
     error, information,
     memory::{
