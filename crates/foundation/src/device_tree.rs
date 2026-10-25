@@ -41,7 +41,7 @@ const METHOD_PROPERTY: &[u8] = b"method";
 
 /// How the kernel calls the firmware's power interface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PsciConduit {
+pub enum PowerStateCoordinationInterfaceConduit {
     /// Through the `hvc` instruction.
     HypervisorCall,
     /// Through the `smc` instruction.
@@ -56,7 +56,7 @@ pub struct DeviceTreeSummary {
     /// Size of the first memory region in bytes.
     pub memory_byte_count: u64,
     /// How to reach the power interface, when the tree describes one.
-    pub psci_conduit: Option<PsciConduit>,
+    pub psci_conduit: Option<PowerStateCoordinationInterfaceConduit>,
     /// Number of CPU cores the tree lists.
     pub cpu_count: usize,
 }
@@ -111,10 +111,10 @@ fn read_cell_count(data: &[u8]) -> Result<usize, DeviceTreeError> {
         .ok_or(DeviceTreeError::Malformed)
 }
 
-fn parse_conduit(method: &[u8]) -> Option<PsciConduit> {
+fn parse_conduit(method: &[u8]) -> Option<PowerStateCoordinationInterfaceConduit> {
     match method.split(|byte| *byte == 0).next() {
-        Some(b"hvc") => Some(PsciConduit::HypervisorCall),
-        Some(b"smc") => Some(PsciConduit::SecureMonitorCall),
+        Some(b"hvc") => Some(PowerStateCoordinationInterfaceConduit::HypervisorCall),
+        Some(b"smc") => Some(PowerStateCoordinationInterfaceConduit::SecureMonitorCall),
         _ => None,
     }
 }
@@ -336,14 +336,14 @@ mod tests {
         let summary = parse_device_tree(&sample_blob(b"hvc\0")).unwrap();
         assert_eq!(summary.memory_base_address, 0x4000_0000);
         assert_eq!(summary.memory_byte_count, 0x2000_0000);
-        assert_eq!(summary.psci_conduit, Some(PsciConduit::HypervisorCall));
+        assert_eq!(summary.psci_conduit, Some(PowerStateCoordinationInterfaceConduit::HypervisorCall));
         assert_eq!(summary.cpu_count, 2);
     }
 
     #[test]
     fn reads_the_secure_monitor_conduit() {
         let summary = parse_device_tree(&sample_blob(b"smc\0")).unwrap();
-        assert_eq!(summary.psci_conduit, Some(PsciConduit::SecureMonitorCall));
+        assert_eq!(summary.psci_conduit, Some(PowerStateCoordinationInterfaceConduit::SecureMonitorCall));
     }
 
     #[test]

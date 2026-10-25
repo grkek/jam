@@ -7,6 +7,8 @@ PAGE_SIZE           = 4096;
 CORE_COUNT          = 4;
 BOOT_STACK_SIZE     = 16384;
 
+__boot_stack_size = BOOT_STACK_SIZE;
+
 SECTIONS
 {
     . = KERNEL_LOAD_ADDRESS;

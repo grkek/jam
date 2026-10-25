@@ -3,17 +3,17 @@
 use core::fmt::Write;
 
 use super::device_tree::load_device_tree;
+use super::secondary_cores::start_secondary_cores;
 use crate::{
     architecture::aarch64::{
         early_console::EarlyConsole, exceptions::install_exception_vectors, time,
     },
-    error, information,
+    error, information, warning,
     memory::{
         frame_allocator::initialise_frame_allocator,
         kernel_image::{kernel_image_end_address, kernel_image_start_address},
         kernel_map::enable_kernel_address_space,
-    },
-    warning,
+    }
 };
 
 const BYTES_PER_MEGABYTE: u64 = 1024 * 1024;
@@ -111,6 +111,8 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     run_frame_allocator_self_test(&mut console, boot_ticks, &mut frame_allocator);
 
+    start_secondary_cores(&mut console, boot_ticks, &summary, kernel_address_space.root_table_address());
+
     information!(console, boot_ticks, "Done.");
 
     halt()
@@ -132,7 +134,7 @@ fn run_frame_allocator_self_test(
         error!(console, boot_ticks, "Self-test failed: unable to allocate test frames");
         return;
     };
-    
+
     information!(
         console,
         boot_ticks,
