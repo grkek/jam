@@ -1,0 +1,29 @@
+# Build output
+/target/
+**/*.rs.bk
+
+# Kernel artifacts
+*.elf
+*.bin
+*.img
+*.map
+
+# QEMU and debugging
+*.log
+*.pcap
+qemu-trace*
+.gdb_history
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+
+# macOS
+.DS_Store
+
+# Local overrides
+.env
+/.cargo/config.local.toml

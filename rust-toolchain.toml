@@ -1,0 +1,5 @@
+[toolchain]
+channel = "1.85.0"
+profile = "minimal"
+components = ["rustfmt", "clippy", "llvm-tools", "rust-src", "rust-analyzer"]
+targets = ["aarch64-unknown-none-softfloat"]

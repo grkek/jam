@@ -1,0 +1,19 @@
+[package]
+name = "kernel"
+description = "The actor microkernel for AArch64."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+foundation.workspace = true
+
+[lints]
+workspace = true

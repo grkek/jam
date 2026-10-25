@@ -1,0 +1,53 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/foundation",
+    "crates/kernel",
+    "crates/runtime",
+    "services/genesis",
+    "services/registry",
+    "services/observatory",
+    "services/distribution",
+    "services/drivers/pl011_console",
+    "services/drivers/virtio_network",
+    "tools/xtask",
+]
+# Plain `cargo test` / `cargo check` on the host only touches host-buildable crates.
+# Everything else is built for AArch64 through `cargo xtask`.
+default-members = ["crates/foundation", "tools/xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[workspace.dependencies]
+foundation = { path = "crates/foundation" }
+runtime = { path = "crates/runtime" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+module_name_repetitions = "allow"
+
+[profile.dev]
+panic = "abort"
+opt-level = 1
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+debug = "line-tables-only"   # keeps symbolication for Autopsy backtraces

@@ -1,0 +1,13 @@
+[package]
+name = "runtime"
+description = "Library linked into every actor."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+foundation.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "foundation"
+description = "Shared vocabulary and system call ABI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+
+[lints]
+workspace = true
