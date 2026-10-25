@@ -1,11 +1,14 @@
 //! Minimal PL011 serial output for the earliest boot and for panics.
 //!
 //! This is a boot aid, not the driver. The real console is a service actor.
+//! Each formatted write holds a lock, so lines from different cores never interleave.
 
 use core::{
     fmt,
     ptr::{read_volatile, write_volatile},
 };
+
+use crate::synchronization::spin_lock::SpinLock;
 
 /// Where QEMU `virt` maps the first PL011 UART.
 const PL011_BASE_ADDRESS: usize = 0x0900_0000;
@@ -13,6 +16,8 @@ const DATA_REGISTER_OFFSET: usize = 0x00;
 const FLAG_REGISTER_OFFSET: usize = 0x18;
 /// Flag register bit that is set while the transmit FIFO is full.
 const TRANSMIT_FIFO_FULL: u32 = 1 << 5;
+
+static CONSOLE_LOCK: SpinLock<()> = SpinLock::new(());
 
 /// Writes text to the first PL011 UART.
 pub struct EarlyConsole;
@@ -23,13 +28,12 @@ impl EarlyConsole {
         let data_register = (PL011_BASE_ADDRESS + DATA_REGISTER_OFFSET) as *mut u32;
 
         // SAFETY: The PL011 registers are memory-mapped at a fixed physical address on QEMU
-        // `virt`, and the MMU is still off, so physical and virtual addresses are the same.
-        // Both registers are 32 bits wide and aligned, and volatile access is how devices are read.
+        // `virt`, identity-mapped as device memory once the MMU is on. Both registers are 32 bits
+        // wide and aligned, and volatile access is how devices are read.
         unsafe {
             while read_volatile(flag_register) & TRANSMIT_FIFO_FULL != 0 {
                 core::hint::spin_loop();
             }
-
             write_volatile(data_register, u32::from(byte));
         }
     }
@@ -44,5 +48,10 @@ impl fmt::Write for EarlyConsole {
             Self::write_byte(byte);
         }
         Ok(())
+    }
+
+    fn write_fmt(&mut self, arguments: fmt::Arguments<'_>) -> fmt::Result {
+        let _guard = CONSOLE_LOCK.lock();
+        fmt::write(self, arguments)
     }
 }

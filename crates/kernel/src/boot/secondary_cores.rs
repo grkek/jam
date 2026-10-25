@@ -14,19 +14,19 @@ use crate::{
         exceptions::install_exception_vectors,
         memory_management_unit::switch_on_memory_management_unit,
         power_interface::{PowerStateCoordinationInterfaceStatus, start_secondary_core},
+        time,
     },
     error, information, warning,
 };
 
-/// How long the boot core waits for one core to report in, in spin iterations.
-const ONLINE_WAIT_SPIN_LIMIT: u64 = 100_000_000;
+const ONLINE_WAIT_TIMEOUT_IN_SECONDS: u64 = 1;
 
 /// Secondary cores that have reached Rust with the memory management unit on.
 static ONLINE_CORE_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// The boot core's start time, so every core's log lines share one time base.
 static BOOT_TICKS: AtomicU64 = AtomicU64::new(0);
 
-/// Starts every core the device tree lists except the boot core, one at a time.
+/// Starts every core the device tree lists except the boot core, all at once, and waits for them.
 ///
 /// Each started core switches on the memory map at `translation_table_address`.
 pub fn start_secondary_cores(
@@ -41,41 +41,39 @@ pub fn start_secondary_cores(
     };
     BOOT_TICKS.store(boot_ticks, Ordering::Release);
 
+    let mut requested_core_count = 0;
     for core_index in 1..summary.cpu_count {
         let status = start_secondary_core(conduit, core_index as u64, translation_table_address);
-        if status != PowerStateCoordinationInterfaceStatus::Success {
-            error!(console, boot_ticks, "Core {core_index}: start request refused: {status:?}");
-            continue;
-        }
-        if wait_until_online(core_index) {
-            information!(console, boot_ticks, "Core {core_index}: online");
+        if status == PowerStateCoordinationInterfaceStatus::Success {
+            requested_core_count += 1;
         } else {
-            error!(console, boot_ticks, "Core {core_index}: did not report in");
+            error!(console, boot_ticks, "Core {core_index}: start request refused: {status:?}");
         }
     }
-}
 
-/// Waits until at least `expected_online_count` secondary cores have reported in.
-fn wait_until_online(expected_online_count: usize) -> bool {
-    for _ in 0..ONLINE_WAIT_SPIN_LIMIT {
-        if ONLINE_CORE_COUNT.load(Ordering::Acquire) >= expected_online_count {
-            return true;
-        }
+    let timeout_ticks = time::read_counter_frequency() * ONLINE_WAIT_TIMEOUT_IN_SECONDS;
+    let wait_started_ticks = time::read_counter_value();
+    while ONLINE_CORE_COUNT.load(Ordering::Acquire) < requested_core_count
+        && time::read_counter_value().wrapping_sub(wait_started_ticks) < timeout_ticks
+    {
         core::hint::spin_loop();
     }
-    false
+
+    let online_core_count = ONLINE_CORE_COUNT.load(Ordering::Acquire) + 1;
+    
+    if online_core_count == summary.cpu_count {
+        information!(console, boot_ticks, "Multiprocessing initialized: {online_core_count} of {} cores online", summary.cpu_count);
+    } else {
+        warning!(console, boot_ticks, "Multiprocessing initialized partially: only {online_core_count} of {} cores online", summary.cpu_count);
+    }
 }
 
 /// First Rust code a secondary core runs. Called from `secondary_entry` in `boot_entry.s`.
 #[unsafe(no_mangle)]
-pub extern "C" fn secondary_main(core_index: usize, translation_table_address: usize) -> ! {
+pub extern "C" fn secondary_main(_core_index: usize, translation_table_address: usize) -> ! {
     install_exception_vectors();
     switch_on_memory_management_unit(translation_table_address);
 
-    let boot_ticks = BOOT_TICKS.load(Ordering::Acquire);
-    let mut console = EarlyConsole;
-    information!(console, boot_ticks, "Core {core_index}: running Rust with the memory management unit on");
-
     ONLINE_CORE_COUNT.fetch_add(1, Ordering::Release);
-    halt()
+    halt();
 }
