@@ -17,6 +17,7 @@ pub mod farewell;
 pub mod frame_bitmap;
 pub mod message_layout;
 pub mod node_identifier;
+pub mod page_table_entry;
 pub mod resource_budget;
 pub mod scroll;
 pub mod system_call;

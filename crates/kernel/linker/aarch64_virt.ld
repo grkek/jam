@@ -12,12 +12,18 @@ SECTIONS
     . = KERNEL_LOAD_ADDRESS;
 
     .text : {
+        __text_start = .;
         KEEP(*(.text.boot))
         *(.text .text.*)
+        . = ALIGN(PAGE_SIZE);
+        __text_end = .;
     }
 
     .rodata : ALIGN(PAGE_SIZE) {
+        __rodata_start = .;
         *(.rodata .rodata.*)
+        . = ALIGN(PAGE_SIZE);
+        __rodata_end = .;
     }
 
     .data : ALIGN(PAGE_SIZE) {
