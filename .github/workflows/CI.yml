@@ -36,7 +36,7 @@ jobs:
         run: |
           # Run QEMU with a timeout, capture output, and assert success
           set -o pipefail
-          timeout 5s cargo xtask -- run 2>&1 | tee qemu.log || true
+          timeout 5s cargo xtask run 2>&1 | tee qemu.log || true
           
           # Verify that the kernel actually reached the "Done." state
           if grep -q "Done." qemu.log; then

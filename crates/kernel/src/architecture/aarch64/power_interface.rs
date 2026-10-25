@@ -1,8 +1,8 @@
-//! The firmware's Power State Coordination Interface (PSCI): starting cores.
+//! The firmware's Power State Coordination Interface (POWER_STATE_COORDINATION_INTERFACE): starting cores.
 
 use foundation::device_tree::PowerStateCoordinationInterfaceConduit;
 
-const PSCI_CPU_ON_64: u64 = 0xc400_0003;
+const POWER_STATE_COORDINATION_INTERFACE_CPU_ON_64: u64 = 0xc400_0003;
 
 unsafe extern "C" {
     /// Where a freshly started core begins, defined in `boot_entry.s`.
@@ -63,7 +63,7 @@ fn call_firmware(
     third_argument: u64,
 ) -> i64 {
     let return_value: u64;
-    // SAFETY: PSCI calls follow the SMC calling convention: arguments in `x0` to `x3`, the result in
+    // SAFETY: POWER_STATE_COORDINATION_INTERFACE calls follow the SMC calling convention: arguments in `x0` to `x3`, the result in
     // `x0`, and the other caller-saved registers possibly clobbered, which `clobber_abi` declares.
     // `CPU_ON` starts another core at an address this kernel chose and does not touch the caller's
     // memory.
@@ -105,7 +105,7 @@ pub fn start_secondary_core(
     let entry_point_address = secondary_entry as usize as u64;
     PowerStateCoordinationInterfaceStatus::from_return_value(call_firmware(
         conduit,
-        PSCI_CPU_ON_64,
+        POWER_STATE_COORDINATION_INTERFACE_CPU_ON_64,
         core_identifier,
         entry_point_address,
         translation_table_address as u64,

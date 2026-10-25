@@ -77,8 +77,8 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
         console,
         boot_ticks,
         "Multiprocessing: {} execution cores detected; power state coordination interface: {:?}",
-        summary.cpu_count,
-        summary.psci_conduit
+        summary.central_processing_unit_count,
+        summary.power_state_coordination_interface_conduit
     );
 
     let Some(mut frame_allocator) = initialise_frame_allocator(&summary) else {

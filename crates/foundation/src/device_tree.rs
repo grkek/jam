@@ -31,7 +31,7 @@ const LARGEST_CELL_COUNT: usize = 2;
 
 const EMPTY_NAME: &[u8] = &[];
 const MEMORY_NODE_NAME_PREFIX: &[u8] = b"memory";
-const PSCI_NODE_NAME: &[u8] = b"psci";
+const POWER_STATE_COORDINATION_INTERFACE_NODE_NAME: &[u8] = b"power_state_coordination_interface";
 const CPUS_NODE_NAME: &[u8] = b"cpus";
 const CPU_NODE_NAME_PREFIX: &[u8] = b"cpu@";
 const ADDRESS_CELLS_PROPERTY: &[u8] = b"#address-cells";
@@ -56,9 +56,9 @@ pub struct DeviceTreeSummary {
     /// Size of the first memory region in bytes.
     pub memory_byte_count: u64,
     /// How to reach the power interface, when the tree describes one.
-    pub psci_conduit: Option<PowerStateCoordinationInterfaceConduit>,
+    pub power_state_coordination_interface_conduit: Option<PowerStateCoordinationInterfaceConduit>,
     /// Number of CPU cores the tree lists.
-    pub cpu_count: usize,
+    pub central_processing_unit_count: usize,
 }
 
 /// Why a device tree could not be read.
@@ -151,8 +151,8 @@ fn walk_structure(structure: &[u8], strings: &[u8]) -> Result<DeviceTreeSummary,
     let mut address_cell_count = DEFAULT_ADDRESS_CELL_COUNT;
     let mut size_cell_count = DEFAULT_SIZE_CELL_COUNT;
     let mut memory: Option<(u64, u64)> = None;
-    let mut psci_conduit = None;
-    let mut cpu_count = 0;
+    let mut power_state_coordination_interface_conduit = None;
+    let mut central_processing_unit_count = 0;
 
     let mut node_names = [EMPTY_NAME; MAXIMUM_TRACKED_DEPTH];
     let mut depth = 0_usize;
@@ -175,7 +175,7 @@ fn walk_structure(structure: &[u8], strings: &[u8]) -> Result<DeviceTreeSummary,
                     && parent_name == Some(CPUS_NODE_NAME)
                     && name.starts_with(CPU_NODE_NAME_PREFIX)
                 {
-                    cpu_count += 1;
+                    central_processing_unit_count += 1;
                 }
             }
             TOKEN_END_NODE => {
@@ -208,10 +208,10 @@ fn walk_structure(structure: &[u8], strings: &[u8]) -> Result<DeviceTreeSummary,
                         .ok_or(DeviceTreeError::Malformed)?;
                     memory = Some((base, size));
                 } else if depth == TOP_LEVEL_NODE_DEPTH
-                    && node_name == PSCI_NODE_NAME
+                    && node_name == POWER_STATE_COORDINATION_INTERFACE_NODE_NAME
                     && property_name == METHOD_PROPERTY
                 {
-                    psci_conduit = parse_conduit(data);
+                    power_state_coordination_interface_conduit = parse_conduit(data);
                 }
             }
             TOKEN_NOP => {}
@@ -224,8 +224,8 @@ fn walk_structure(structure: &[u8], strings: &[u8]) -> Result<DeviceTreeSummary,
     Ok(DeviceTreeSummary {
         memory_base_address,
         memory_byte_count,
-        psci_conduit,
-        cpu_count,
+        power_state_coordination_interface_conduit,
+        central_processing_unit_count,
     })
 }
 
@@ -310,7 +310,7 @@ mod tests {
         values.iter().flat_map(|value| value.to_be_bytes()).collect()
     }
 
-    fn sample_blob(psci_method: &[u8]) -> Vec<u8> {
+    fn sample_blob(power_state_coordination_interface_method: &[u8]) -> Vec<u8> {
         let mut builder = BlobBuilder::new();
         builder.begin_node("");
         builder.property("#address-cells", &words(&[2]));
@@ -318,8 +318,8 @@ mod tests {
         builder.begin_node("memory@40000000");
         builder.property("reg", &words(&[0, 0x4000_0000, 0, 0x2000_0000]));
         builder.end_node();
-        builder.begin_node("psci");
-        builder.property("method", psci_method);
+        builder.begin_node("power_state_coordination_interface");
+        builder.property("method", power_state_coordination_interface_method);
         builder.end_node();
         builder.begin_node("cpus");
         builder.begin_node("cpu@0");
@@ -332,18 +332,18 @@ mod tests {
     }
 
     #[test]
-    fn reads_memory_conduit_and_cpu_count() {
+    fn reads_memory_conduit_and_central_processing_unit_count() {
         let summary = parse_device_tree(&sample_blob(b"hvc\0")).unwrap();
         assert_eq!(summary.memory_base_address, 0x4000_0000);
         assert_eq!(summary.memory_byte_count, 0x2000_0000);
-        assert_eq!(summary.psci_conduit, Some(PowerStateCoordinationInterfaceConduit::HypervisorCall));
-        assert_eq!(summary.cpu_count, 2);
+        assert_eq!(summary.power_state_coordination_interface_conduit, Some(PowerStateCoordinationInterfaceConduit::HypervisorCall));
+        assert_eq!(summary.central_processing_unit_count, 2);
     }
 
     #[test]
     fn reads_the_secure_monitor_conduit() {
         let summary = parse_device_tree(&sample_blob(b"smc\0")).unwrap();
-        assert_eq!(summary.psci_conduit, Some(PowerStateCoordinationInterfaceConduit::SecureMonitorCall));
+        assert_eq!(summary.power_state_coordination_interface_conduit, Some(PowerStateCoordinationInterfaceConduit::SecureMonitorCall));
     }
 
     #[test]

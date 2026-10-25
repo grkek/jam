@@ -1,4 +1,4 @@
-// First instructions executed. QEMU starts only core zero; the others wait for PSCI.
+// First instructions executed. QEMU starts only core zero; the others wait for POWER_STATE_COORDINATION_INTERFACE.
 // Assumes the kernel starts at EL1 with the MMU off, which is what QEMU `virt` provides.
 
 	.section .text.boot
@@ -37,7 +37,7 @@ park:
 	wfe
 	b	park
 
-// Where a core started through PSCI begins.
+// Where a core started through POWER_STATE_COORDINATION_INTERFACE begins.
 // On entry x0 holds the context value from CPU_ON: the address of the kernel's translation tables.
 
 	.section .text

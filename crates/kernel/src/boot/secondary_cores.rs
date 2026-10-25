@@ -35,14 +35,14 @@ pub fn start_secondary_cores(
     summary: &DeviceTreeSummary,
     translation_table_address: usize,
 ) {
-    let Some(conduit) = summary.psci_conduit else {
+    let Some(conduit) = summary.power_state_coordination_interface_conduit else {
         warning!(console, boot_ticks, "No power interface described by the device tree: staying on one core");
         return;
     };
     BOOT_TICKS.store(boot_ticks, Ordering::Release);
 
     let mut requested_core_count = 0;
-    for core_index in 1..summary.cpu_count {
+    for core_index in 1..summary.central_processing_unit_count {
         let status = start_secondary_core(conduit, core_index as u64, translation_table_address);
         if status == PowerStateCoordinationInterfaceStatus::Success {
             requested_core_count += 1;
@@ -61,10 +61,10 @@ pub fn start_secondary_cores(
 
     let online_core_count = ONLINE_CORE_COUNT.load(Ordering::Acquire) + 1;
     
-    if online_core_count == summary.cpu_count {
-        information!(console, boot_ticks, "Multiprocessing initialized: {online_core_count} of {} cores online", summary.cpu_count);
+    if online_core_count == summary.central_processing_unit_count {
+        information!(console, boot_ticks, "Multiprocessing initialized: {online_core_count} of {} cores online", summary.central_processing_unit_count);
     } else {
-        warning!(console, boot_ticks, "Multiprocessing initialized partially: only {online_core_count} of {} cores online", summary.cpu_count);
+        warning!(console, boot_ticks, "Multiprocessing initialized partially: only {online_core_count} of {} cores online", summary.central_processing_unit_count);
     }
 }
 
