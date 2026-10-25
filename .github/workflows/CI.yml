@@ -31,3 +31,9 @@ jobs:
 
       - name: Build for AArch64 via xtask
         run: cargo xtask build
+
+      - name: Run in QEMU (with timeout)
+        run: |
+          # Boots QEMU, waits 10 seconds for it to boot/print logs, 
+          # then kills QEMU so the CI step can proceed.
+          timeout --preserve-status 10s cargo xtask run || [ $? -eq 124 ]

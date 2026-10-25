@@ -1,5 +1,7 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="JAM" />
+  <a href="https://github.com/grkek/jam">
+    <img src="assets/banner.svg" alt="JAM" />
+  </a>
 </p>
 
 JAM a.k.a Just Another Microkernel is a fault-tolerant, actor-based software for the AArch64 system, written in Rust. It is inspired by the resilience of Erlang and dedicated to the memory of Joe Armstrong.
