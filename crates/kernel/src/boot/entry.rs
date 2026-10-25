@@ -6,7 +6,7 @@ use super::device_tree::load_device_tree;
 use super::secondary_cores::start_secondary_cores;
 use crate::{
     architecture::aarch64::{
-        early_console::EarlyConsole, exceptions::install_exception_vectors, time,
+        early_console::EarlyConsole, exceptions::install_exception_vectors, processor, time
     },
     error, information,
     memory::{
@@ -135,9 +135,7 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
     information!(console, boot_ticks, "Done.");
 
     loop {
-        unsafe {
-            core::arch::asm!("wfe");
-        }
+        processor::wait_for_event();
     }
 }
 

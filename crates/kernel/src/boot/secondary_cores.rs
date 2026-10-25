@@ -13,7 +13,7 @@ use crate::{
         exceptions::install_exception_vectors,
         memory_management_unit::switch_on_memory_management_unit,
         power_interface::{PowerStateCoordinationInterfaceStatus, start_secondary_core},
-        time,
+        processor, time,
     },
     error, information, warning,
 };
@@ -64,9 +64,7 @@ pub fn start_secondary_cores(
     {
         // Sleep in low-power state until an event (sev) wakes us up,
         // or the check loop re-evaluates on timer ticks/spurious wakeups.
-        unsafe {
-            core::arch::asm!("wfe");
-        }
+        processor::wait_for_event();
     }
 
     let online_core_count = ONLINE_CORE_COUNT.load(Ordering::Acquire) + 1;
@@ -97,13 +95,9 @@ pub extern "C" fn secondary_main(_core_index: usize, translation_table_address: 
     ONLINE_CORE_COUNT.fetch_add(1, Ordering::Release);
 
     // Signal the primary core waiting in WFE that a core has arrived
-    unsafe {
-        core::arch::asm!("sev");
-    }
+    processor::send_event();
 
     loop {
-        unsafe {
-            core::arch::asm!("wfe");
-        }
+        processor::wait_for_event();
     }
 }
