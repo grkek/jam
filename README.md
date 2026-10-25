@@ -1,10 +1,6 @@
-<div align="center" style="margin: 30px 0;">
-  <div style="background-color: #f5da55; padding: 18px 45px; display: inline-block; border-radius: 4px;">
-    <span style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-weight: 900; font-size: 54px; color: #000000; letter-spacing: 2px; line-height: 1;">
-      JAM
-    </span>
-  </div>
-</div>
+<p align="center">
+  <img src="assets/banner.svg" alt="JAM" />
+</p>
 
 JAM a.k.a Just Another Microkernel is a fault-tolerant, actor-based software for the AArch64 system, written in Rust. It is inspired by the resilience of Erlang and dedicated to the memory of Joe Armstrong.
 
