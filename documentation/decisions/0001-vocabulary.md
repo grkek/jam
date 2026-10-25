@@ -2,6 +2,8 @@
 
 Status: **Accepted**
 
+## Decision
+
 | Concept | Name |
 |---|---|
 | Unit of execution and isolation | `Actor` |

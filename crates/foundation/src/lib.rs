@@ -11,5 +11,6 @@ pub mod cause;
 pub mod configuration;
 pub mod farewell;
 pub mod message_layout;
+pub mod node_identifier;
 pub mod resource_budget;
 pub mod system_call;

@@ -2,6 +2,8 @@
 
 Status: **Accepted**
 
+## Decision
+
 - `Configuration` is everything chosen at spawn: `ResourceBudget`, `OverflowPolicy`,
   `Lineage`, `Survival`.
 - Struct names are singular.

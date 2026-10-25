@@ -1,6 +1,6 @@
 //! Why an actor ended.
 
-use crate::address::{Address, NodeIdentifier};
+use crate::{address::Address, node_identifier::NodeIdentifier};
 
 /// The reason an actor ended, as established by the kernel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

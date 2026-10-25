@@ -1,24 +1,6 @@
 //! Where an actor can be reached.
 
-/// Identity of a node (a machine) in a distributed system.
-///
-/// Derived from the hash of the node's public key, so identity is cryptographic.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct NodeIdentifier(u64);
-
-impl NodeIdentifier {
-    /// Wraps a raw identifier value.
-    #[must_use]
-    pub const fn new(raw_value: u64) -> Self {
-        Self(raw_value)
-    }
-
-    /// Returns the raw identifier value.
-    #[must_use]
-    pub const fn raw_value(self) -> u64 {
-        self.0
-    }
-}
+use crate::node_identifier::NodeIdentifier;
 
 /// Address of an actor on the current node.
 ///
@@ -96,13 +78,17 @@ impl Address {
     /// Whether the actor lives on this node.
     #[must_use]
     pub const fn is_local(self) -> bool {
-        return matches!(self, Self::Local(_));
+        match self {
+            Self::Local(_) => true,
+            Self::Remote(_) => false,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node_identifier::ED25519_PUBLIC_KEY_BYTE_COUNT;
 
     #[test]
     fn local_address_remembers_slot_and_generation() {
@@ -119,11 +105,13 @@ mod tests {
     #[test]
     fn locality_is_explicit() {
         let local_address = LocalAddress::new(1, 1);
-        let remote_address = RemoteAddress::new(NodeIdentifier::new(99), local_address);
+        let node_identifier =
+            NodeIdentifier::from_ed25519_public_key(&[99; ED25519_PUBLIC_KEY_BYTE_COUNT]);
+        let remote_address = RemoteAddress::new(node_identifier, local_address);
 
         assert!(Address::Local(local_address).is_local());
         assert!(!Address::Remote(remote_address).is_local());
-        assert_eq!(remote_address.node_identifier().raw_value(), 99);
+        assert_eq!(remote_address.node_identifier(), node_identifier);
         assert_eq!(remote_address.local_address(), local_address);
     }
 }
