@@ -2,6 +2,7 @@
 
 pub mod boot_entry;
 pub mod early_console;
+pub mod exceptions;
 pub mod generic_timer;
 pub mod interrupt_controller;
 pub mod memory_management_unit;
