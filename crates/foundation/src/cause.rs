@@ -56,8 +56,18 @@ mod tests {
         assert!(!Cause::Completed.is_abnormal());
         assert!(Cause::Panicked.is_abnormal());
         assert!(Cause::Faulted.is_abnormal());
-        assert!(Cause::Terminated { requester_address: someone }.is_abnormal());
-        assert!(Cause::Tethered { origin_address: someone }.is_abnormal());
+        assert!(
+            Cause::Terminated {
+                requester_address: someone
+            }
+            .is_abnormal()
+        );
+        assert!(
+            Cause::Tethered {
+                origin_address: someone
+            }
+            .is_abnormal()
+        );
         assert!(Cause::NoSuchActor.is_abnormal());
     }
 }

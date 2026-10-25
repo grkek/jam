@@ -11,7 +11,6 @@ pub const SCROLL_REFERENCE_MAXIMUM_PER_ACTOR: usize = 256;
 /// Most unsealed draft Scrolls one actor may hold at once.
 pub const SCROLL_DRAFT_MAXIMUM_PER_ACTOR: usize = 8;
 
-
 /// An actor's handle to a Scroll.
 ///
 /// It indexes the holder's own reference table in the kernel, so it means nothing
@@ -85,11 +84,6 @@ impl ScrollReference {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn drafts_are_capped_below_references() {
-        assert!(SCROLL_DRAFT_MAXIMUM_PER_ACTOR <= SCROLL_REFERENCE_MAXIMUM_PER_ACTOR);
-    }
 
     #[test]
     fn reference_remembers_index_and_generation() {

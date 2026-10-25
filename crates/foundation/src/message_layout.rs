@@ -78,7 +78,9 @@ impl Slot {
         if padding_bytes.iter().any(|padding_byte| *padding_byte != 0) {
             return Err(SlotWireError::NonCanonicalScrollSlot);
         }
-        Ok(Self::Scroll(ScrollReference::from_wire_bytes(reference_bytes)))
+        Ok(Self::Scroll(ScrollReference::from_wire_bytes(
+            reference_bytes,
+        )))
     }
 }
 
@@ -247,7 +249,10 @@ mod tests {
     #[test]
     fn header_round_trips_through_wire_bytes() {
         let header = MessageHeader::new(sender(), 64, 3).unwrap();
-        assert_eq!(MessageHeader::from_wire_bytes(&header.to_wire_bytes()), Ok(header));
+        assert_eq!(
+            MessageHeader::from_wire_bytes(&header.to_wire_bytes()),
+            Ok(header)
+        );
     }
 
     #[test]

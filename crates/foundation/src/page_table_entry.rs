@@ -1,4 +1,4 @@
-//! Encoding of AArch64 translation table entries for the 4 KiB granule.
+//! Encoding of `AArch64` translation table entries for the 4 KiB granule.
 //!
 //! Permissions are enforced when an entry is built: nothing is ever both writable and
 //! executable, and device memory is never executable.
@@ -235,7 +235,10 @@ mod tests {
             attributes(MemoryKind::Device, KernelAccess::ReadWrite, false),
         )
         .unwrap();
-        assert_eq!((entry.raw_value() >> ATTRIBUTE_INDEX_SHIFT) & 0b111, DEVICE_MEMORY_ATTRIBUTE_INDEX);
+        assert_eq!(
+            (entry.raw_value() >> ATTRIBUTE_INDEX_SHIFT) & 0b111,
+            DEVICE_MEMORY_ATTRIBUTE_INDEX
+        );
     }
 
     #[test]

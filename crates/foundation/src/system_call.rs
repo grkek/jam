@@ -132,7 +132,9 @@ mod tests {
     fn unknown_numbers_are_rejected() {
         assert_eq!(
             SystemCall::try_from(9999),
-            Err(UnknownSystemCall { requested_number: 9999 })
+            Err(UnknownSystemCall {
+                requested_number: 9999
+            })
         );
     }
 }

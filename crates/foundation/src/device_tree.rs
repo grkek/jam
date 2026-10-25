@@ -204,8 +204,9 @@ fn walk_structure(structure: &[u8], strings: &[u8]) -> Result<DeviceTreeSummary,
                 {
                     let base = read_cells(data, 0, address_cell_count)
                         .ok_or(DeviceTreeError::Malformed)?;
-                    let size = read_cells(data, address_cell_count * CELL_BYTE_COUNT, size_cell_count)
-                        .ok_or(DeviceTreeError::Malformed)?;
+                    let size =
+                        read_cells(data, address_cell_count * CELL_BYTE_COUNT, size_cell_count)
+                            .ok_or(DeviceTreeError::Malformed)?;
                     memory = Some((base, size));
                 } else if depth == TOP_LEVEL_NODE_DEPTH
                     && node_name == POWER_STATE_COORDINATION_INTERFACE_NODE_NAME
@@ -307,7 +308,10 @@ mod tests {
     }
 
     fn words(values: &[u32]) -> Vec<u8> {
-        values.iter().flat_map(|value| value.to_be_bytes()).collect()
+        values
+            .iter()
+            .flat_map(|value| value.to_be_bytes())
+            .collect()
     }
 
     fn sample_blob(power_state_coordination_interface_method: &[u8]) -> Vec<u8> {
@@ -336,14 +340,20 @@ mod tests {
         let summary = parse_device_tree(&sample_blob(b"hvc\0")).unwrap();
         assert_eq!(summary.memory_base_address, 0x4000_0000);
         assert_eq!(summary.memory_byte_count, 0x2000_0000);
-        assert_eq!(summary.power_state_coordination_interface_conduit, Some(PowerStateCoordinationInterfaceConduit::HypervisorCall));
+        assert_eq!(
+            summary.power_state_coordination_interface_conduit,
+            Some(PowerStateCoordinationInterfaceConduit::HypervisorCall)
+        );
         assert_eq!(summary.central_processing_unit_count, 2);
     }
 
     #[test]
     fn reads_the_secure_monitor_conduit() {
         let summary = parse_device_tree(&sample_blob(b"smc\0")).unwrap();
-        assert_eq!(summary.power_state_coordination_interface_conduit, Some(PowerStateCoordinationInterfaceConduit::SecureMonitorCall));
+        assert_eq!(
+            summary.power_state_coordination_interface_conduit,
+            Some(PowerStateCoordinationInterfaceConduit::SecureMonitorCall)
+        );
     }
 
     #[test]

@@ -105,7 +105,11 @@ impl AddressSpace {
         )?;
         let entry = PageTableEntry::block(physical_address as u64, attributes)
             .ok_or(MapError::Misaligned)?;
-        Self::install(level_two, table_index(virtual_address, LEVEL_TWO_SHIFT), entry)
+        Self::install(
+            level_two,
+            table_index(virtual_address, LEVEL_TWO_SHIFT),
+            entry,
+        )
     }
 
     /// Maps one 4 KiB page.
@@ -139,6 +143,10 @@ impl AddressSpace {
         )?;
         let entry = PageTableEntry::page(physical_address as u64, attributes)
             .ok_or(MapError::Misaligned)?;
-        Self::install(level_three, table_index(virtual_address, LEVEL_THREE_SHIFT), entry)
+        Self::install(
+            level_three,
+            table_index(virtual_address, LEVEL_THREE_SHIFT),
+            entry,
+        )
     }
 }

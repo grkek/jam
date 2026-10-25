@@ -9,17 +9,24 @@ on:
 
 jobs:
   build-and-test:
-    name: Build & Test
+    name: Build & Test & Lint
     runs-on: ubuntu-latest
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust toolchain with components
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-none-softfloat
+          components: clippy, rustfmt
+
+      - name: Check code formatting (rustfmt)
+        run: cargo fmt -- --check
+
+      - name: Run Clippy (Workspace)
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Install QEMU
         run: |

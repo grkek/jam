@@ -32,7 +32,9 @@ pub enum DeviceTreeLoadError {
 /// # Errors
 ///
 /// Fails when no device tree is found or the one found is invalid.
-pub fn load_device_tree(handed_over_address: usize) -> Result<LoadedDeviceTree, DeviceTreeLoadError> {
+pub fn load_device_tree(
+    handed_over_address: usize,
+) -> Result<LoadedDeviceTree, DeviceTreeLoadError> {
     let blob = device_tree_blob_at(handed_over_address)
         .or_else(|| device_tree_blob_at(QEMU_VIRT_RAM_BASE_ADDRESS))
         .ok_or(DeviceTreeLoadError::NotFound)?;

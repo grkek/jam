@@ -119,11 +119,10 @@ mod tests {
 
     /// SHA-256 of the scheme byte `0x01` followed by 32 zero bytes, computed independently.
     const ALL_ZERO_KEY_EXPECTED_HASH: [u8; PUBLIC_KEY_HASH_BYTE_COUNT] = [
-    0x1a, 0x7d, 0xfd, 0xea, 0xff, 0xee, 0xda, 0xc4,
-    0x89, 0x28, 0x7e, 0x85, 0xbe, 0x5e, 0x9c, 0x04,
-    0x9a, 0x2f, 0xf6, 0x47, 0x0f, 0x55, 0xcf, 0x30,
-    0x26, 0x0f, 0x55, 0x39, 0x5a, 0xc1, 0xb1, 0x59,
-];
+        0x1a, 0x7d, 0xfd, 0xea, 0xff, 0xee, 0xda, 0xc4, 0x89, 0x28, 0x7e, 0x85, 0xbe, 0x5e, 0x9c,
+        0x04, 0x9a, 0x2f, 0xf6, 0x47, 0x0f, 0x55, 0xcf, 0x30, 0x26, 0x0f, 0x55, 0x39, 0x5a, 0xc1,
+        0xb1, 0x59,
+    ];
 
     #[test]
     fn identifier_is_the_hash_of_scheme_number_and_public_key() {
@@ -131,7 +130,10 @@ mod tests {
             NodeIdentifier::from_ed25519_public_key(&[0; ED25519_PUBLIC_KEY_BYTE_COUNT]);
         let wire_bytes = node_identifier.to_wire_bytes();
 
-        assert_eq!(wire_bytes.first(), Some(&IdentityScheme::Ed25519Sha256.number()));
+        assert_eq!(
+            wire_bytes.first(),
+            Some(&IdentityScheme::Ed25519Sha256.number())
+        );
         assert_eq!(wire_bytes.get(1..), Some(&ALL_ZERO_KEY_EXPECTED_HASH[..]));
     }
 
@@ -156,7 +158,9 @@ mod tests {
         wire_bytes[0] = 0;
         assert_eq!(
             NodeIdentifier::from_wire_bytes(wire_bytes),
-            Err(UnknownIdentityScheme { requested_number: 0 })
+            Err(UnknownIdentityScheme {
+                requested_number: 0
+            })
         );
     }
 }

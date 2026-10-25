@@ -65,14 +65,23 @@ fn run_command(program: &OsString, arguments: &[&str]) -> Result<(), String> {
     if status.success() {
         Ok(())
     } else {
-        Err(format!("{} {arguments:?} failed", program.to_string_lossy()))
+        Err(format!(
+            "{} {arguments:?} failed",
+            program.to_string_lossy()
+        ))
     }
 }
 
 fn build_kernel() -> Result<PathBuf, String> {
     run_command(
         &cargo_program(),
-        &["build", "--package", KERNEL_PACKAGE_NAME, "--target", KERNEL_TARGET],
+        &[
+            "build",
+            "--package",
+            KERNEL_PACKAGE_NAME,
+            "--target",
+            KERNEL_TARGET,
+        ],
     )?;
     Ok(workspace_root()
         .join("target")
@@ -87,12 +96,17 @@ fn run_on_qemu(kernel_path: &Path) -> Result<(), String> {
     run_command(
         &OsString::from(QEMU_PROGRAM),
         &[
-            "-machine", "virt",
-            "-cpu", "cortex-a72",
-            "-smp", QEMU_CORE_COUNT,
-            "-m", QEMU_MEMORY,
+            "-machine",
+            "virt",
+            "-cpu",
+            "cortex-a72",
+            "-smp",
+            QEMU_CORE_COUNT,
+            "-m",
+            QEMU_MEMORY,
             "-nographic",
-            "-kernel", &kernel_path,
+            "-kernel",
+            &kernel_path,
         ],
     )
 }

@@ -7,14 +7,18 @@ use core::arch::asm;
 /// Reads the architected timer frequency in ticks per second.
 pub fn read_counter_frequency() -> u64 {
     let freq: u64;
-    unsafe { asm!("mrs {}, cntfrq_el0", out(reg) freq); }
+    unsafe {
+        asm!("mrs {}, cntfrq_el0", out(reg) freq);
+    }
     freq
 }
 
 /// Reads the current architected virtual counter value.
 pub fn read_counter_value() -> u64 {
     let val: u64;
-    unsafe { asm!("mrs {}, cntvct_el0", out(reg) val); }
+    unsafe {
+        asm!("mrs {}, cntvct_el0", out(reg) val);
+    }
     val
 }
 
@@ -35,7 +39,10 @@ impl Timestamp {
         let seconds = elapsed_ticks / freq;
         let remainder = elapsed_ticks % freq;
         let fractional = (remainder * 10000) / freq;
-        Self { seconds, fractional }
+        Self {
+            seconds,
+            fractional,
+        }
     }
 }
 

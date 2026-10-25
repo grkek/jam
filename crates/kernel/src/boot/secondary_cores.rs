@@ -36,7 +36,11 @@ pub fn start_secondary_cores(
     translation_table_address: usize,
 ) {
     let Some(conduit) = summary.power_state_coordination_interface_conduit else {
-        warning!(console, boot_ticks, "No power interface described by the device tree: staying on one core");
+        warning!(
+            console,
+            boot_ticks,
+            "No power interface described by the device tree: staying on one core"
+        );
         return;
     };
     BOOT_TICKS.store(boot_ticks, Ordering::Release);
@@ -47,7 +51,10 @@ pub fn start_secondary_cores(
         if status == PowerStateCoordinationInterfaceStatus::Success {
             requested_core_count += 1;
         } else {
-            error!(console, boot_ticks, "Core {core_index}: start request refused: {status:?}");
+            error!(
+                console,
+                boot_ticks, "Core {core_index}: start request refused: {status:?}"
+            );
         }
     }
 
@@ -60,11 +67,21 @@ pub fn start_secondary_cores(
     }
 
     let online_core_count = ONLINE_CORE_COUNT.load(Ordering::Acquire) + 1;
-    
+
     if online_core_count == summary.central_processing_unit_count {
-        information!(console, boot_ticks, "Multiprocessing initialized: {online_core_count} of {} cores online", summary.central_processing_unit_count);
+        information!(
+            console,
+            boot_ticks,
+            "Multiprocessing initialized: {online_core_count} of {} cores online",
+            summary.central_processing_unit_count
+        );
     } else {
-        warning!(console, boot_ticks, "Multiprocessing initialized partially: only {online_core_count} of {} cores online", summary.central_processing_unit_count);
+        warning!(
+            console,
+            boot_ticks,
+            "Multiprocessing initialized partially: only {online_core_count} of {} cores online",
+            summary.central_processing_unit_count
+        );
     }
 }
 

@@ -112,8 +112,14 @@ fn exception_class_name(exception_class: u64) -> &'static str {
 pub extern "C" fn exception_handler(trap_frame: &TrapFrame) -> ! {
     let exception_class =
         (trap_frame.exception_syndrome_register >> EXCEPTION_CLASS_SHIFT) & EXCEPTION_CLASS_MASK;
-    let source_name = name_at(&VECTOR_SOURCE_NAMES, trap_frame.vector_index / VECTORS_PER_SOURCE);
-    let kind_name = name_at(&VECTOR_KIND_NAMES, trap_frame.vector_index % VECTORS_PER_SOURCE);
+    let source_name = name_at(
+        &VECTOR_SOURCE_NAMES,
+        trap_frame.vector_index / VECTORS_PER_SOURCE,
+    );
+    let kind_name = name_at(
+        &VECTOR_KIND_NAMES,
+        trap_frame.vector_index % VECTORS_PER_SOURCE,
+    );
 
     let mut console = EarlyConsole;
     let _ = writeln!(console, "\nEXCEPTION: {kind_name} from {source_name}");
@@ -122,10 +128,26 @@ pub extern "C" fn exception_handler(trap_frame: &TrapFrame) -> ! {
         "  EXC_CLS  {exception_class:#018x} ({})",
         exception_class_name(exception_class)
     );
-    let _ = writeln!(console, "  ESR_EL1  {:#018x}", trap_frame.exception_syndrome_register);
-    let _ = writeln!(console, "  FAR_EL1  {:#018x}", trap_frame.fault_address_register);
-    let _ = writeln!(console, "  ELR_EL1  {:#018x}", trap_frame.exception_link_register);
-    let _ = writeln!(console, "  SPSR_EL1 {:#018x}", trap_frame.saved_program_status_register);
+    let _ = writeln!(
+        console,
+        "  ESR_EL1  {:#018x}",
+        trap_frame.exception_syndrome_register
+    );
+    let _ = writeln!(
+        console,
+        "  FAR_EL1  {:#018x}",
+        trap_frame.fault_address_register
+    );
+    let _ = writeln!(
+        console,
+        "  ELR_EL1  {:#018x}",
+        trap_frame.exception_link_register
+    );
+    let _ = writeln!(
+        console,
+        "  SPSR_EL1 {:#018x}",
+        trap_frame.saved_program_status_register
+    );
 
     for (row, row_registers) in trap_frame
         .general_registers

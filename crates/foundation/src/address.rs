@@ -56,8 +56,16 @@ impl LocalAddress {
     }
 
     fn from_wire_bytes(wire_bytes: [u8; LOCAL_ADDRESS_WIRE_BYTE_COUNT]) -> Self {
-        let [slot_0, slot_1, slot_2, slot_3, generation_0, generation_1, generation_2, generation_3] =
-            wire_bytes;
+        let [
+            slot_0,
+            slot_1,
+            slot_2,
+            slot_3,
+            generation_0,
+            generation_1,
+            generation_2,
+            generation_3,
+        ] = wire_bytes;
         Self {
             slot_index: u32::from_le_bytes([slot_0, slot_1, slot_2, slot_3]),
             generation_counter: u32::from_le_bytes([
@@ -178,7 +186,10 @@ impl Address {
             REMOTE_ADDRESS_KIND_NUMBER => {
                 let node_identifier = NodeIdentifier::from_wire_bytes(node_bytes)
                     .map_err(AddressWireError::UnknownIdentityScheme)?;
-                Ok(Self::Remote(RemoteAddress::new(node_identifier, local_address)))
+                Ok(Self::Remote(RemoteAddress::new(
+                    node_identifier,
+                    local_address,
+                )))
             }
             requested_number => Err(AddressWireError::UnknownKind { requested_number }),
         }
@@ -221,7 +232,10 @@ mod tests {
     #[test]
     fn local_address_round_trips_through_wire_bytes() {
         let address = Address::Local(LocalAddress::new(12, 34));
-        assert_eq!(Address::from_wire_bytes(&address.to_wire_bytes()), Ok(address));
+        assert_eq!(
+            Address::from_wire_bytes(&address.to_wire_bytes()),
+            Ok(address)
+        );
     }
 
     #[test]
@@ -230,7 +244,10 @@ mod tests {
             sample_node_identifier(),
             LocalAddress::new(5, 6),
         ));
-        assert_eq!(Address::from_wire_bytes(&address.to_wire_bytes()), Ok(address));
+        assert_eq!(
+            Address::from_wire_bytes(&address.to_wire_bytes()),
+            Ok(address)
+        );
     }
 
     #[test]
@@ -248,7 +265,9 @@ mod tests {
         wire_bytes[0] = 9;
         assert_eq!(
             Address::from_wire_bytes(&wire_bytes),
-            Err(AddressWireError::UnknownKind { requested_number: 9 })
+            Err(AddressWireError::UnknownKind {
+                requested_number: 9
+            })
         );
     }
 

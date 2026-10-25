@@ -8,12 +8,13 @@ use crate::{
     architecture::aarch64::{
         early_console::EarlyConsole, exceptions::install_exception_vectors, time,
     },
-    error, information, warning,
+    error, information,
     memory::{
         frame_allocator::initialise_frame_allocator,
         kernel_image::{kernel_image_end_address, kernel_image_start_address},
         kernel_map::enable_kernel_address_space,
-    }
+    },
+    warning,
 };
 
 const BYTES_PER_MEGABYTE: u64 = 1024 * 1024;
@@ -36,12 +37,19 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
             " (aarch64-unknown-none) #1 SMP"
         )
     );
-    information!(console, boot_ticks, "Exception vector table installed successfully");
+    information!(
+        console,
+        boot_ticks,
+        "Exception vector table installed successfully"
+    );
 
     let device_tree = match load_device_tree(device_tree_address) {
         Ok(device_tree) => device_tree,
         Err(error) => {
-            error!(console, boot_ticks, "Fatal: device tree unusable: {error:?}");
+            error!(
+                console,
+                boot_ticks, "Fatal: device tree unusable: {error:?}"
+            );
             halt()
         }
     };
@@ -82,7 +90,10 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
     );
 
     let Some(mut frame_allocator) = initialise_frame_allocator(&summary) else {
-        error!(console, boot_ticks, "Fatal: physical frame allocator initialization failed");
+        error!(
+            console,
+            boot_ticks, "Fatal: physical frame allocator initialization failed"
+        );
         halt()
     };
 
@@ -97,7 +108,10 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
     let kernel_address_space = match enable_kernel_address_space(&summary, &mut frame_allocator) {
         Ok(kernel_address_space) => kernel_address_space,
         Err(error) => {
-            error!(console, boot_ticks, "Fatal: kernel address space unusable: {error:?}");
+            error!(
+                console,
+                boot_ticks, "Fatal: kernel address space unusable: {error:?}"
+            );
             halt()
         }
     };
@@ -111,7 +125,12 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     run_frame_allocator_self_test(&mut console, boot_ticks, &mut frame_allocator);
 
-    start_secondary_cores(&mut console, boot_ticks, &summary, kernel_address_space.root_table_address());
+    start_secondary_cores(
+        &mut console,
+        boot_ticks,
+        &summary,
+        kernel_address_space.root_table_address(),
+    );
 
     information!(console, boot_ticks, "Done.");
 
@@ -124,14 +143,21 @@ fn run_frame_allocator_self_test(
     boot_ticks: u64,
     frame_allocator: &mut crate::memory::frame_allocator::FrameAllocator,
 ) {
-    information!(console, boot_ticks, "Running self-test: verifying frame allocation and deallocation integrity...");
+    information!(
+        console,
+        boot_ticks,
+        "Running self-test: verifying frame allocation and deallocation integrity..."
+    );
 
     let initial_free_count = frame_allocator.free_frame_count();
     let first_frame = frame_allocator.allocate_frame();
     let second_frame = frame_allocator.allocate_frame();
 
     let (Some(first_frame), Some(second_frame)) = (first_frame, second_frame) else {
-        error!(console, boot_ticks, "Self-test failed: unable to allocate test frames");
+        error!(
+            console,
+            boot_ticks, "Self-test failed: unable to allocate test frames"
+        );
         return;
     };
 
@@ -141,17 +167,30 @@ fn run_frame_allocator_self_test(
         "Self-test allocation passed: acquired frames at {first_frame:#x} and {second_frame:#x}"
     );
 
-    if frame_allocator.free_frame_count() != initial_free_count.saturating_sub(SELF_TEST_FRAME_COUNT) {
-        warning!(console, boot_ticks, "Self-test warning: frame count mismatch after allocation");
+    if frame_allocator.free_frame_count()
+        != initial_free_count.saturating_sub(SELF_TEST_FRAME_COUNT)
+    {
+        warning!(
+            console,
+            boot_ticks,
+            "Self-test warning: frame count mismatch after allocation"
+        );
     }
 
     let _ = frame_allocator.free_frame(first_frame);
     let _ = frame_allocator.free_frame(second_frame);
 
     if frame_allocator.free_frame_count() == initial_free_count {
-        information!(console, boot_ticks, "Self-test deallocation passed: all test frames successfully returned to pool");
+        information!(
+            console,
+            boot_ticks,
+            "Self-test deallocation passed: all test frames successfully returned to pool"
+        );
     } else {
-        error!(console, boot_ticks, "Self-test error: frame count did not match after release");
+        error!(
+            console,
+            boot_ticks, "Self-test error: frame count did not match after release"
+        );
     }
 }
 

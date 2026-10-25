@@ -24,12 +24,16 @@ pub fn device_tree_blob_at(address: usize) -> Option<&'static [u8]> {
         if magic != DEVICE_TREE_MAGIC {
             return None;
         }
-        let total_size =
-            usize::try_from(u32::from_be(read_volatile((address + TOTAL_SIZE_OFFSET) as *const u32)))
-                .ok()?;
+        let total_size = usize::try_from(u32::from_be(read_volatile(
+            (address + TOTAL_SIZE_OFFSET) as *const u32,
+        )))
+        .ok()?;
         if !(DEVICE_TREE_HEADER_BYTE_COUNT..=DEVICE_TREE_BYTE_MAXIMUM).contains(&total_size) {
             return None;
         }
-        Some(core::slice::from_raw_parts(address as *const u8, total_size))
+        Some(core::slice::from_raw_parts(
+            address as *const u8,
+            total_size,
+        ))
     }
 }
