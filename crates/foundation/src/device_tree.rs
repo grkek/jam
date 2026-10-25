@@ -209,7 +209,7 @@ fn walk_structure(structure: &[u8], strings: &[u8]) -> Result<DeviceTreeSummary,
                             .ok_or(DeviceTreeError::Malformed)?;
                     memory = Some((base, size));
                 } else if depth == TOP_LEVEL_NODE_DEPTH
-                    && node_name == POWER_STATE_COORDINATION_INTERFACE_NODE_NAME
+                    && node_name.starts_with(POWER_STATE_COORDINATION_INTERFACE_NODE_NAME)
                     && property_name == METHOD_PROPERTY
                 {
                     power_state_coordination_interface_conduit = parse_conduit(data);
@@ -322,7 +322,7 @@ mod tests {
         builder.begin_node("memory@40000000");
         builder.property("reg", &words(&[0, 0x4000_0000, 0, 0x2000_0000]));
         builder.end_node();
-        builder.begin_node("power_state_coordination_interface");
+        builder.begin_node("psci");
         builder.property("method", power_state_coordination_interface_method);
         builder.end_node();
         builder.begin_node("cpus");
