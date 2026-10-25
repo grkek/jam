@@ -62,7 +62,7 @@ pub fn start_secondary_cores(
     while ONLINE_CORE_COUNT.load(Ordering::Acquire) < requested_core_count
         && time::read_counter_value().wrapping_sub(wait_started_ticks) < timeout_ticks
     {
-        // Sleep in low-power state until an event (sev) wakes us up, 
+        // Sleep in low-power state until an event (sev) wakes us up,
         // or the check loop re-evaluates on timer ticks/spurious wakeups.
         unsafe {
             core::arch::asm!("wfe");
