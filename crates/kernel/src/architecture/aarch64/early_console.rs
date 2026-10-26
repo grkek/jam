@@ -8,9 +8,8 @@ use core::{
     ptr::{read_volatile, write_volatile},
 };
 
-use crate::synchronization::spin_lock::SpinLock;
 use crate::memory::address_translation::KERNEL_VIRTUAL_OFFSET;
-
+use crate::synchronization::spin_lock::SpinLock;
 
 /// Where QEMU `virt` maps the first PL011 UART.
 const PL011_BASE_ADDRESS: usize = KERNEL_VIRTUAL_OFFSET + 0x0900_0000;

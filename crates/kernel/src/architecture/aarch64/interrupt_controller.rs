@@ -1,7 +1,7 @@
 //! The generic interrupt controller (`GICv2`), as `QEMU` `virt` provides it.
 
-use core::ptr::{read_volatile, write_volatile};
 use crate::memory::address_translation::KERNEL_VIRTUAL_OFFSET;
+use core::ptr::{read_volatile, write_volatile};
 
 const DISTRIBUTOR_BASE_ADDRESS: usize = KERNEL_VIRTUAL_OFFSET + 0x0800_0000;
 const CPU_INTERFACE_BASE_ADDRESS: usize = KERNEL_VIRTUAL_OFFSET + 0x0801_0000;
