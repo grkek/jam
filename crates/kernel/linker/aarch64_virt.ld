@@ -2,12 +2,14 @@
 
 ENTRY(_start)
 
-KERNEL_LOAD_ADDRESS = 0x40200000;
-PAGE_SIZE           = 4096;
-CORE_COUNT          = 4;
-BOOT_STACK_SIZE     = 16384;
+KERNEL_LOAD_ADDRESS  = 0x40200000;
+PAGE_SIZE            = 4096;
+CORE_COUNT           = 8;
+BOOT_STACK_SIZE      = 16384;
+INTERRUPT_STACK_SIZE = 16384;
 
-__boot_stack_size = BOOT_STACK_SIZE;
+__boot_stack_size      = BOOT_STACK_SIZE;
+__interrupt_stack_size = INTERRUPT_STACK_SIZE;
 
 SECTIONS
 {
@@ -45,6 +47,12 @@ SECTIONS
         __boot_stack_core_zero_top = . + BOOT_STACK_SIZE;
         . += CORE_COUNT * BOOT_STACK_SIZE;
         __boot_stacks_top = .;
+    }
+
+    .interrupt_stacks (NOLOAD) : ALIGN(PAGE_SIZE) {
+        __interrupt_stacks_bottom = .;
+        . += CORE_COUNT * INTERRUPT_STACK_SIZE;
+        __interrupt_stacks_top = .;
     }
 
     . = ALIGN(PAGE_SIZE);

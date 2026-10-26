@@ -1,4 +1,4 @@
-//! The actor microkernel for AArch64.
+//! The actor microkernel for `AArch64`.
 
 #![no_std]
 #![no_main]

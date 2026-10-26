@@ -5,6 +5,7 @@
 use core::arch::asm;
 
 /// Reads the architected timer frequency in ticks per second.
+#[must_use]
 pub fn read_counter_frequency() -> u64 {
     let freq: u64;
     unsafe {
@@ -14,6 +15,7 @@ pub fn read_counter_frequency() -> u64 {
 }
 
 /// Reads the current architected virtual counter value.
+#[must_use]
 pub fn read_counter_value() -> u64 {
     let val: u64;
     unsafe {
@@ -32,6 +34,7 @@ pub struct Timestamp {
 
 impl Timestamp {
     /// Calculates elapsed uptime from the virtual counter's boot baseline.
+    #[must_use]
     pub fn now(boot_ticks: u64) -> Self {
         let freq = read_counter_frequency();
         let current = read_counter_value();

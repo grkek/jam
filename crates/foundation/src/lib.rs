@@ -19,6 +19,7 @@ pub mod message_layout;
 pub mod node_identifier;
 pub mod page_table_entry;
 pub mod resource_budget;
+pub mod run_queue;
 pub mod scroll;
 pub mod system_call;
 pub mod system_call_status;

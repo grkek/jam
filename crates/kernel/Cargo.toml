@@ -1,6 +1,6 @@
 [package]
 name = "kernel"
-description = "The actor microkernel for AArch64."
+description = "The actor microkernel for `AArch64`."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

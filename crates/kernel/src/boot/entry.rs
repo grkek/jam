@@ -2,17 +2,29 @@
 
 use core::fmt::Write;
 
+use foundation::configuration::Configuration;
+
 use super::device_tree::load_device_tree;
 use super::secondary_cores::start_secondary_cores;
+
 use crate::{
+    actors::table::spawn_kernel_actor,
     architecture::aarch64::{
-        early_console::EarlyConsole, exceptions::install_exception_vectors, processor, time,
+        early_console::EarlyConsole,
+        exceptions::install_exception_vectors,
+        interrupt_controller::initialise_distributor,
+        processor::wait_for_event,
+        time::{read_counter_frequency, read_counter_value},
     },
     error, information,
     memory::{
         frame_allocator::initialise_frame_allocator,
         kernel_image::{kernel_image_end_address, kernel_image_start_address},
         kernel_map::enable_kernel_address_space,
+    },
+    scheduling::{
+        core_local::{current_core_local, register_current_core},
+        scheduler::start_current_core_tick,
     },
     warning,
 };
@@ -25,8 +37,16 @@ const SELF_TEST_FRAME_COUNT: usize = 2;
 pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
     install_exception_vectors();
 
-    let boot_ticks = time::read_counter_value();
+    let boot_ticks = read_counter_value();
     let mut console = EarlyConsole;
+
+    if !register_current_core(0) {
+        error!(
+            console,
+            boot_ticks, "Fatal: unable to register the current core: 0"
+        );
+        halt()
+    }
 
     information!(
         console,
@@ -125,6 +145,15 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     run_frame_allocator_self_test(&mut console, boot_ticks, &mut frame_allocator);
 
+    for _ in 0..3 {
+        match spawn_kernel_actor(demonstration_actor, None, Configuration::default()) {
+            Ok(address) => information!(console, boot_ticks, "Spawned actor {address:?}"),
+            Err(error) => error!(console, boot_ticks, "Could not spawn actor: {error:?}"),
+        }
+    }
+
+    initialise_distributor();
+
     start_secondary_cores(
         &mut console,
         boot_ticks,
@@ -132,10 +161,12 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
         kernel_address_space.root_table_address(),
     );
 
+    start_current_core_tick();
+
     information!(console, boot_ticks, "Done.");
 
     loop {
-        processor::wait_for_event();
+        wait_for_event();
     }
 }
 
@@ -193,6 +224,26 @@ fn run_frame_allocator_self_test(
             console,
             boot_ticks, "Self-test error: frame count did not match after release"
         );
+    }
+}
+
+extern "C" fn demonstration_actor() -> ! {
+    let report_interval = read_counter_frequency();
+    let mut last_report_ticks = read_counter_value();
+    loop {
+        let now_ticks = read_counter_value();
+        if now_ticks.wrapping_sub(last_report_ticks) >= report_interval {
+            last_report_ticks = now_ticks;
+            if let Some(core_local) = current_core_local() {
+                let _ = writeln!(
+                    EarlyConsole,
+                    "Actor in slot {} is running on core {}",
+                    core_local.current_slot_index(),
+                    core_local.core_index()
+                );
+            }
+        }
+        core::hint::spin_loop();
     }
 }
 

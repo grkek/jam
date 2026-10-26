@@ -1,10 +1,12 @@
-// The AArch64 exception vector table: 16 entries of 0x80 bytes, aligned to 0x800.
+// The `AArch64` exception vector table: 16 entries of 0x80 bytes, aligned to 0x800.
 //
-// Every entry saves the registers into a trap frame on the current stack and hands
-// the frame, with the entry's index, to `exception_handler` in Rust.
+// Every entry saves the registers into a trap frame on the current stack, switches to the
+// core's own interrupt stack, and hands the frame, with the entry's index, to
+// `exception_handler` in Rust. The handler returns the frame to resume, which is normally the
+// same one. Resuming a different frame is how the scheduler switches actors.
 //
 // Index layout: source * 4 + kind
-//   source: 0 current level SP0, 1 current level SPx, 2 lower level AArch64, 3 lower level AArch32
+//   source: 0 current level SP0, 1 current level SPx, 2 lower level `AArch64`, 3 lower level AArch32
 //   kind:   0 synchronous, 1 IRQ, 2 FIQ, 3 SError
 //
 // Trap frame (288 bytes, matches `TrapFrame` in exceptions.rs):
@@ -69,8 +71,38 @@ exception_common:
 	stp	x2, x3, [sp, #264]
 	str	x0, [sp, #280]
 
+	// Run the handler on this core's interrupt stack, so the interrupted stack stays untouched
+	// and another core can safely resume it once the frame is saved.
+	mrs	x1, tpidr_el1
+	add	x1, x1, #1
+	ldr	x2, =__interrupt_stack_size
+	adrp	x3, __interrupt_stacks_bottom
+	add	x3, x3, :lo12:__interrupt_stacks_bottom
+	madd	x3, x1, x2, x3
 	mov	x0, sp
+	mov	sp, x3
 	bl	exception_handler
-	// The handler never returns yet. Park if it ever does.
-1:	wfe
-	b	1b
+
+	// x0 is the frame to resume.
+	mov	sp, x0
+	ldp	x2, x3, [sp, #248]
+	msr	elr_el1, x2
+	msr	spsr_el1, x3
+	ldr	x30, [sp, #240]
+	ldp	x28, x29, [sp, #224]
+	ldp	x26, x27, [sp, #208]
+	ldp	x24, x25, [sp, #192]
+	ldp	x22, x23, [sp, #176]
+	ldp	x20, x21, [sp, #160]
+	ldp	x18, x19, [sp, #144]
+	ldp	x16, x17, [sp, #128]
+	ldp	x14, x15, [sp, #112]
+	ldp	x12, x13, [sp, #96]
+	ldp	x10, x11, [sp, #80]
+	ldp	x8, x9, [sp, #64]
+	ldp	x6, x7, [sp, #48]
+	ldp	x4, x5, [sp, #32]
+	ldp	x2, x3, [sp, #16]
+	ldp	x0, x1, [sp, #0]
+	add	sp, sp, #TRAP_FRAME_SIZE
+	eret

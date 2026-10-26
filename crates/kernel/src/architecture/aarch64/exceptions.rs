@@ -36,7 +36,7 @@ const EXCEPTION_CLASS_BREAKPOINT_INSTRUCTION: u64 = 0x3c;
 const VECTOR_SOURCE_NAMES: [&str; 4] = [
     "current level, SP0",
     "current level, SPx",
-    "lower level, AArch64",
+    "lower level, `AArch64`",
     "lower level, AArch32",
 ];
 const VECTOR_KIND_NAMES: [&str; 4] = ["synchronous", "IRQ", "FIQ", "SError"];
@@ -94,7 +94,7 @@ fn name_at(names: &[&'static str], index: u64) -> &'static str {
 fn exception_class_name(exception_class: u64) -> &'static str {
     match exception_class {
         EXCEPTION_CLASS_UNKNOWN => "unknown reason",
-        EXCEPTION_CLASS_SUPERVISOR_CALL => "supervisor call from AArch64",
+        EXCEPTION_CLASS_SUPERVISOR_CALL => "supervisor call from `AArch64`",
         EXCEPTION_CLASS_INSTRUCTION_ABORT_LOWER_LEVEL => "instruction abort from a lower level",
         EXCEPTION_CLASS_INSTRUCTION_ABORT_SAME_LEVEL => "instruction abort at the same level",
         EXCEPTION_CLASS_PROGRAM_COUNTER_ALIGNMENT => "program counter alignment fault",

@@ -36,7 +36,7 @@ jobs:
       - name: Run host-side tests (Foundation)
         run: cargo test
 
-      - name: Build for AArch64 via xtask
+      - name: Build for `AArch64` via xtask
         run: cargo xtask build
 
       - name: Run in QEMU and Verify Boot

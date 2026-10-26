@@ -1,4 +1,7 @@
 //! A mutual exclusion lock that spins until it is free.
+//!
+//! Holding the lock keeps interrupts masked on the holder's core, so an interrupt handler on
+//! the same core can never wait for a lock its own interrupted code holds.
 
 use core::{
     cell::UnsafeCell,
@@ -6,6 +9,8 @@ use core::{
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicBool, Ordering},
 };
+
+use crate::architecture::aarch64::processor::{mask_interrupts, restore_interrupts};
 
 /// Protects a value so only one core touches it at a time.
 pub struct SpinLock<Value> {
@@ -26,8 +31,9 @@ impl<Value> SpinLock<Value> {
         }
     }
 
-    /// Spins until the lock is free, then holds it until the guard is dropped.
+    /// Masks interrupts, spins until the lock is free, then holds it until the guard is dropped.
     pub fn lock(&self) -> SpinLockGuard<'_, Value> {
+        let saved_interrupt_state = mask_interrupts();
         while self
             .is_locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -35,13 +41,17 @@ impl<Value> SpinLock<Value> {
         {
             spin_loop();
         }
-        SpinLockGuard { lock: self }
+        SpinLockGuard {
+            lock: self,
+            saved_interrupt_state,
+        }
     }
 }
 
-/// Proof that the lock is held. Releases it on drop.
+/// Proof that the lock is held. Releases it, and restores interrupts, on drop.
 pub struct SpinLockGuard<'lock, Value> {
     lock: &'lock SpinLock<Value>,
+    saved_interrupt_state: u64,
 }
 
 impl<Value> Deref for SpinLockGuard<'_, Value> {
@@ -63,5 +73,6 @@ impl<Value> DerefMut for SpinLockGuard<'_, Value> {
 impl<Value> Drop for SpinLockGuard<'_, Value> {
     fn drop(&mut self) {
         self.lock.is_locked.store(false, Ordering::Release);
+        restore_interrupts(self.saved_interrupt_state);
     }
 }

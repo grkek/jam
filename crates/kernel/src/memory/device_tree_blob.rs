@@ -10,6 +10,7 @@ const WORD_ALIGNMENT: usize = 4;
 const DEVICE_TREE_BYTE_MAXIMUM: usize = 1024 * 1024;
 
 /// Returns the device tree blob at `address`, or `None` when no valid header is there.
+#[must_use]
 pub fn device_tree_blob_at(address: usize) -> Option<&'static [u8]> {
     if address == 0 || address % WORD_ALIGNMENT != 0 {
         return None;

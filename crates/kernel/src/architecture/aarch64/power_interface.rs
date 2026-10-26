@@ -1,4 +1,4 @@
-//! The firmware's Power State Coordination Interface (POWER_STATE_COORDINATION_INTERFACE): starting cores.
+//! The firmware's Power State Coordination Interface (`POWER_STATE_COORDINATION_INTERFACE`): starting cores.
 
 use foundation::device_tree::PowerStateCoordinationInterfaceConduit;
 
@@ -97,6 +97,7 @@ fn call_firmware(
 /// `core_identifier` is the core's affinity value, which on QEMU `virt` equals its index.
 /// The core receives `translation_table_address` in `x0`, so it can switch on the same
 /// memory map as the boot core.
+#[must_use]
 pub fn start_secondary_core(
     conduit: PowerStateCoordinationInterfaceConduit,
     core_identifier: u64,

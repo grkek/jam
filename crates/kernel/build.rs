@@ -1,4 +1,4 @@
-//! Hands the linker script to the linker when building for AArch64.
+//! Hands the linker script to the linker when building for `AArch64`.
 
 use std::env;
 

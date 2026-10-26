@@ -13,7 +13,7 @@ members = [
     "tools/xtask",
 ]
 # Plain `cargo test` / `cargo check` on the host only touches host-buildable crates.
-# Everything else is built for AArch64 through `cargo xtask`.
+# Everything else is built for `AArch64` through `cargo xtask`.
 default-members = ["crates/foundation", "tools/xtask"]
 
 [workspace.package]

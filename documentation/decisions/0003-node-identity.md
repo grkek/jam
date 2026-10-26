@@ -29,7 +29,7 @@ without the matching private key.
 ## Why
 
 - SHA-256 and Ed25519 are the most scrutinised, widely implemented choices, and SHA-256
-  is hardware accelerated on most AArch64 cores.
+  is hardware accelerated on most `AArch64` cores.
 - 256 bits give about 2^128 collision resistance, which is beyond reach, and about 128
   bits of effective strength against Grover's algorithm.
 - The scheme number is the insurance: if an algorithm is ever broken, a new scheme
