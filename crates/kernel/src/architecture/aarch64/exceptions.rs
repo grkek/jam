@@ -1,11 +1,11 @@
 //! Exception vectors and the fault report.
 //!
-//! Every exception currently ends in a report on the console and a halt. Resuming
-//! after system calls and interrupts comes later.
+//! Interrupts are handed to the scheduler, which may resume a different frame. Every other
+//! exception ends in a report on the console and a halt.
 
 use core::fmt::Write;
 
-use super::early_console::EarlyConsole;
+use super::{early_console::EarlyConsole, interrupts::handle_interrupt};
 use crate::boot::entry::halt;
 
 core::arch::global_asm!(include_str!("exception_vectors.s"));
@@ -21,6 +21,7 @@ const REGISTERS_PER_REPORT_ROW: usize = 4;
 const EXCEPTION_CLASS_SHIFT: u64 = 26;
 const EXCEPTION_CLASS_MASK: u64 = 0x3f;
 const VECTORS_PER_SOURCE: u64 = 4;
+const IRQ_CURRENT_LEVEL_SPX_VECTOR_INDEX: u64 = 5;
 
 const EXCEPTION_CLASS_UNKNOWN: u64 = 0x00;
 const EXCEPTION_CLASS_SUPERVISOR_CALL: u64 = 0x15;
@@ -36,7 +37,7 @@ const EXCEPTION_CLASS_BREAKPOINT_INSTRUCTION: u64 = 0x3c;
 const VECTOR_SOURCE_NAMES: [&str; 4] = [
     "current level, SP0",
     "current level, SPx",
-    "lower level, `AArch64`",
+    "lower level, AArch64",
     "lower level, AArch32",
 ];
 const VECTOR_KIND_NAMES: [&str; 4] = ["synchronous", "IRQ", "FIQ", "SError"];
@@ -73,16 +74,6 @@ pub fn install_exception_vectors() {
     }
 }
 
-/// Executes a breakpoint instruction, which must end in a fault report.
-///
-/// Temporary: it proves the vector table works. Remove it once real faults exercise it.
-pub fn trigger_test_breakpoint() {
-    // SAFETY: `brk` raises a synchronous exception that the installed vectors handle.
-    unsafe {
-        core::arch::asm!("brk #0");
-    }
-}
-
 fn name_at(names: &[&'static str], index: u64) -> &'static str {
     usize::try_from(index)
         .ok()
@@ -107,9 +98,20 @@ fn exception_class_name(exception_class: u64) -> &'static str {
     }
 }
 
-/// Reports the exception on the console and halts. Called from `exception_vectors.s`.
+/// Called from `exception_vectors.s` on the core's interrupt stack. Returns the frame to resume.
 #[unsafe(no_mangle)]
-pub extern "C" fn exception_handler(trap_frame: &TrapFrame) -> ! {
+pub extern "C" fn exception_handler(trap_frame: *mut TrapFrame) -> *mut TrapFrame {
+    // SAFETY: The vector entry passes the frame it just saved on the interrupted stack, and
+    // nothing else touches it while the handler runs.
+    let frame = unsafe { &*trap_frame };
+    if frame.vector_index == IRQ_CURRENT_LEVEL_SPX_VECTOR_INDEX {
+        return handle_interrupt(trap_frame as usize) as *mut TrapFrame;
+    }
+    report_fault_and_halt(frame)
+}
+
+/// Reports the exception on the console and halts.
+fn report_fault_and_halt(trap_frame: &TrapFrame) -> ! {
     let exception_class =
         (trap_frame.exception_syndrome_register >> EXCEPTION_CLASS_SHIFT) & EXCEPTION_CLASS_MASK;
     let source_name = name_at(

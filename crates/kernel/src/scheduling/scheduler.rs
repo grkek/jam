@@ -19,6 +19,9 @@ use crate::{
     },
 };
 
+/// Most actors one theft takes at once.
+const STEAL_BATCH_MAXIMUM: usize = 16;
+
 /// How often the timer interrupts each core.
 const TICKS_PER_SECOND: u64 = 100;
 
@@ -40,20 +43,52 @@ pub fn enqueue_runnable(slot_index: usize) {
     }
 }
 
-/// Takes work from another core's queue, newest first.
-fn steal_from_other_cores(own_core_index: usize) -> Option<usize> {
-    for core_local in core_locals() {
-        if core_local.core_index() == own_core_index || !core_local.is_online() {
+/// Moves work from the core with the longest queue to this one, until the two are about equal.
+///
+/// Only one queue lock is held at a time, so two cores balancing against each other never
+/// wait on each other's locks.
+fn rebalance(core_local: &CoreLocal) {
+    let own_length = core_local.run_queue().lock().length();
+
+    let mut busiest: Option<(&CoreLocal, usize)> = None;
+    for other_core_local in core_locals() {
+        if other_core_local.core_index() == core_local.core_index()
+            || !other_core_local.is_online()
+        {
             continue;
         }
-
-        let stolen_slot_index = core_local.run_queue().lock().pop_back();
-
-        if stolen_slot_index.is_some() {
-            return stolen_slot_index;
+        let length = other_core_local.run_queue().lock().length();
+        if busiest.map_or(true, |(_, longest)| length > longest) {
+            busiest = Some((other_core_local, length));
         }
     }
-    None
+    let Some((victim, victim_length)) = busiest else {
+        return;
+    };
+    if victim_length <= own_length + 1 {
+        return;
+    }
+
+    let steal_count = ((victim_length - own_length) / 2).min(STEAL_BATCH_MAXIMUM);
+    let mut stolen_slot_indices = [0_usize; STEAL_BATCH_MAXIMUM];
+    let mut stolen_count = 0;
+    {
+        let mut victim_queue = victim.run_queue().lock();
+        while stolen_count < steal_count {
+            let Some(slot_index) = victim_queue.pop_back() else {
+                break;
+            };
+            if let Some(cell) = stolen_slot_indices.get_mut(stolen_count) {
+                *cell = slot_index;
+            }
+            stolen_count += 1;
+        }
+    }
+
+    let mut own_queue = core_local.run_queue().lock();
+    for slot_index in stolen_slot_indices.iter().take(stolen_count) {
+        let _ = own_queue.push_back(*slot_index);
+    }
 }
 
 /// Saves the interrupted context and returns the frame of the context to run next.
@@ -64,17 +99,13 @@ fn schedule(core_local: &CoreLocal, interrupted_frame_address: usize) -> usize {
     } else {
         let _ = with_control_block(current_slot_index, |control_block| {
             control_block.saved_frame_address = interrupted_frame_address;
-            control_block.state = ActorState::Runnable;
         });
-        let _ = core_local.run_queue().lock().push_back(current_slot_index);
     }
 
-    // The own queue's lock is released before stealing, so two cores never hold each other's.
-    let own_next_slot_index = core_local.run_queue().lock().pop_front();
-    let next_slot_index =
-        own_next_slot_index.or_else(|| steal_from_other_cores(core_local.core_index()));
+    rebalance(core_local);
+    let next_slot_index = core_local.run_queue().lock().pop_front();
 
-    let next_frame_address = next_slot_index.and_then(|slot_index| {
+    let next = next_slot_index.and_then(|slot_index| {
         with_control_block(slot_index, |control_block| {
             control_block.state = ActorState::Running;
             control_block.saved_frame_address
@@ -82,12 +113,20 @@ fn schedule(core_local: &CoreLocal, interrupted_frame_address: usize) -> usize {
         .map(|frame_address| (slot_index, frame_address))
     });
 
-    if let Some((slot_index, frame_address)) = next_frame_address {
-        core_local.set_current_slot_index(slot_index);
-        frame_address
-    } else {
-        core_local.set_current_slot_index(NO_ACTOR);
-        core_local.idle_frame_address()
+    match next {
+        Some((slot_index, frame_address)) => {
+            if current_slot_index != NO_ACTOR {
+                let _ = with_control_block(current_slot_index, |control_block| {
+                    control_block.state = ActorState::Runnable;
+                });
+                let _ = core_local.run_queue().lock().push_back(current_slot_index);
+            }
+            core_local.set_current_slot_index(slot_index);
+            frame_address
+        }
+        // Nothing else to run: the current actor keeps the core.
+        None if current_slot_index != NO_ACTOR => interrupted_frame_address,
+        None => core_local.idle_frame_address(),
     }
 }
 

@@ -145,7 +145,7 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     run_frame_allocator_self_test(&mut console, boot_ticks, &mut frame_allocator);
 
-    for _ in 0..3 {
+    for _ in 0..64 {
         match spawn_kernel_actor(demonstration_actor, None, Configuration::default()) {
             Ok(address) => information!(console, boot_ticks, "Spawned actor {address:?}"),
             Err(error) => error!(console, boot_ticks, "Could not spawn actor: {error:?}"),
