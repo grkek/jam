@@ -5,8 +5,8 @@ use foundation::device_tree::PowerStateCoordinationInterfaceConduit;
 const POWER_STATE_COORDINATION_INTERFACE_CPU_ON_64: u64 = 0xc400_0003;
 
 unsafe extern "C" {
-    /// Where a freshly started core begins, defined in `boot_entry.s`.
-    fn secondary_entry();
+    /// The physical address of `secondary_entry`, stored as data by `boot_entry.s`.
+    static secondary_entry_physical_address: u64;
 }
 
 /// What the firmware answered to a request.
@@ -103,7 +103,8 @@ pub fn start_secondary_core(
     core_identifier: u64,
     translation_table_address: usize,
 ) -> PowerStateCoordinationInterfaceStatus {
-    let entry_point_address = secondary_entry as usize as u64;
+    // SAFETY: A plain 64-bit constant defined by the assembly and never written.
+    let entry_point_address = unsafe { secondary_entry_physical_address };
     PowerStateCoordinationInterfaceStatus::from_return_value(call_firmware(
         conduit,
         POWER_STATE_COORDINATION_INTERFACE_CPU_ON_64,

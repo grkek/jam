@@ -85,14 +85,12 @@ pub fn enable_kernel_address_space(
     let data = PageAttributes::new(MemoryKind::Normal, KernelAccess::ReadWrite, false)?;
 
     // SAFETY: These symbols come from the linker script. Only their addresses are taken.
-    let (text_start, text_end, rodata_start, rodata_end) = unsafe {
-        (
-            &raw const __text_start as usize,
-            &raw const __text_end as usize,
-            &raw const __rodata_start as usize,
-            &raw const __rodata_end as usize,
-        )
-    };
+    let (text_start, text_end, rodata_start, rodata_end) = (
+        &raw const __text_start as usize,
+        &raw const __text_end as usize,
+        &raw const __rodata_start as usize,
+        &raw const __rodata_end as usize,
+    );
 
     let memory_start = usize::try_from(summary.memory_base_address)
         .map_err(|_| KernelMapError::MemoryRegionUnsupported)?;

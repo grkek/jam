@@ -57,10 +57,18 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
             " (aarch64-unknown-none) #1 SMP"
         )
     );
+
     information!(
         console,
         boot_ticks,
         "Exception vector table installed successfully"
+    );
+
+    information!(
+        console,
+        boot_ticks,
+        "Kernel executing in the upper half, kernel_main at {:#x}",
+        kernel_main as usize
     );
 
     let device_tree = match load_device_tree(device_tree_address) {

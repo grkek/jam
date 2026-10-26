@@ -9,9 +9,11 @@ use core::{
 };
 
 use crate::synchronization::spin_lock::SpinLock;
+use crate::memory::address_translation::KERNEL_VIRTUAL_OFFSET;
+
 
 /// Where QEMU `virt` maps the first PL011 UART.
-const PL011_BASE_ADDRESS: usize = 0x0900_0000;
+const PL011_BASE_ADDRESS: usize = KERNEL_VIRTUAL_OFFSET + 0x0900_0000;
 const DATA_REGISTER_OFFSET: usize = 0x00;
 const FLAG_REGISTER_OFFSET: usize = 0x18;
 /// Flag register bit that is set while the transmit FIFO is full.

@@ -16,7 +16,7 @@ static FRAME_ALLOCATOR_INITIALISED: AtomicBool = AtomicBool::new(false);
 
 unsafe extern "C" {
     /// First address after the kernel image, defined by the linker script.
-    static __kernel_end: u8;
+    unsafe static __kernel_end: u8;
 }
 
 /// Tracks every frame of RAM. Everything the kernel already occupies is marked in use.
@@ -45,7 +45,7 @@ pub fn initialise_frame_allocator(summary: &DeviceTreeSummary) -> Option<FrameAl
     let storage_byte_count = storage_word_count * size_of::<u64>();
 
     // SAFETY: `__kernel_end` is a symbol the linker script defines. Only its address is taken.
-    let kernel_end_address = virtual_to_physical(unsafe { &raw const __kernel_end as usize });
+    let kernel_end_address = virtual_to_physical(&raw const __kernel_end as usize);
     let storage_address = align_up(kernel_end_address, FRAME_BYTE_COUNT);
     let reserved_end_address = align_up(storage_address + storage_byte_count, FRAME_BYTE_COUNT);
     if reserved_end_address > memory_base_address + memory_byte_count {

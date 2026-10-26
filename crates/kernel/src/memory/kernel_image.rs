@@ -11,12 +11,12 @@ unsafe extern "C" {
 #[must_use]
 pub fn kernel_image_start_address() -> usize {
     // SAFETY: `__text_start` is a symbol the linker script defines. Only its address is taken.
-    virtual_to_physical(unsafe { &raw const __text_start as usize })
+    virtual_to_physical(&raw const __text_start as usize)
 }
 
 /// Physical address after the kernel image, its stacks, and its padding.
 #[must_use]
 pub fn kernel_image_end_address() -> usize {
     // SAFETY: `__kernel_end` is a symbol the linker script defines. Only its address is taken.
-    virtual_to_physical(unsafe { &raw const __kernel_end as usize })
+    virtual_to_physical(&raw const __kernel_end as usize)
 }
