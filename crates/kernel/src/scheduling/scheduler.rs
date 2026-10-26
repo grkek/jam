@@ -52,8 +52,7 @@ fn rebalance(core_local: &CoreLocal) {
 
     let mut busiest: Option<(&CoreLocal, usize)> = None;
     for other_core_local in core_locals() {
-        if other_core_local.core_index() == core_local.core_index()
-            || !other_core_local.is_online()
+        if other_core_local.core_index() == core_local.core_index() || !other_core_local.is_online()
         {
             continue;
         }
