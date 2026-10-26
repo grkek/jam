@@ -10,8 +10,9 @@ const LEVEL_ONE_SHIFT: usize = 30;
 const LEVEL_TWO_SHIFT: usize = 21;
 const LEVEL_THREE_SHIFT: usize = 12;
 const TABLE_INDEX_MASK: usize = 0x1ff;
-/// Virtual addresses are 39 bits wide, so translation starts at level one.
-const VIRTUAL_ADDRESS_LIMIT: usize = 1 << 39;
+/// Virtual addresses are 39 bits wide, so translation starts at level one. The bits above must
+/// be all zeros (lower half) or all ones (upper half).
+const VIRTUAL_ADDRESS_BIT_COUNT: usize = 39;
 
 /// Why a mapping could not be made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,13 +27,18 @@ pub enum MapError {
     AlreadyMapped,
 }
 
-/// The translation tables of one address space.
+/// The translation tables of one half of an address space.
 pub struct AddressSpace {
     root_table: TableFrame,
 }
 
 fn table_index(virtual_address: usize, shift: usize) -> usize {
     (virtual_address >> shift) & TABLE_INDEX_MASK
+}
+
+fn is_canonical(virtual_address: usize) -> bool {
+    let upper_bits = virtual_address >> VIRTUAL_ADDRESS_BIT_COUNT;
+    upper_bits == 0 || upper_bits == usize::MAX >> VIRTUAL_ADDRESS_BIT_COUNT
 }
 
 impl AddressSpace {
@@ -43,7 +49,7 @@ impl AddressSpace {
         })
     }
 
-    /// Physical address of the root table, as `TTBR0_EL1` expects it.
+    /// Physical address of the root table, as `TTBR0_EL1` or `TTBR1_EL1` expects it.
     #[must_use]
     pub const fn root_table_address(&self) -> usize {
         self.root_table.physical_address()
@@ -92,7 +98,7 @@ impl AddressSpace {
         physical_address: usize,
         attributes: PageAttributes,
     ) -> Result<(), MapError> {
-        if virtual_address >= VIRTUAL_ADDRESS_LIMIT {
+        if !is_canonical(virtual_address) {
             return Err(MapError::InvalidAddress);
         }
         if virtual_address % BLOCK_BYTE_COUNT != 0 {
@@ -125,7 +131,7 @@ impl AddressSpace {
         physical_address: usize,
         attributes: PageAttributes,
     ) -> Result<(), MapError> {
-        if virtual_address >= VIRTUAL_ADDRESS_LIMIT {
+        if !is_canonical(virtual_address) {
             return Err(MapError::InvalidAddress);
         }
         if virtual_address % PAGE_BYTE_COUNT != 0 {

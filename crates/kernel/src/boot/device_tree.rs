@@ -2,7 +2,9 @@
 
 use foundation::device_tree::{DeviceTreeError, DeviceTreeSummary, parse_device_tree};
 
-use crate::memory::device_tree_blob::device_tree_blob_at;
+use crate::memory::{
+    address_translation::virtual_to_physical, device_tree_blob::device_tree_blob_at,
+};
 
 /// Start of RAM on QEMU `virt`, where the device tree sits when no address is handed over.
 const QEMU_VIRT_RAM_BASE_ADDRESS: usize = 0x4000_0000;
@@ -10,7 +12,8 @@ const QEMU_VIRT_RAM_BASE_ADDRESS: usize = 0x4000_0000;
 /// A device tree that was found and read.
 #[derive(Clone, Copy, Debug)]
 pub struct LoadedDeviceTree {
-    /// Where the blob was actually found, which may differ from the address handed over.
+    /// The physical address where the blob was actually found, which may differ from the
+    /// address handed over.
     pub blob_address: usize,
     /// The facts the kernel needs from it.
     pub summary: DeviceTreeSummary,
@@ -27,7 +30,7 @@ pub enum DeviceTreeLoadError {
 
 /// Locates the device tree and reads the facts the kernel needs from it.
 ///
-/// Tries the address the firmware handed over first, then the start of RAM.
+/// Tries the physical address the firmware handed over first, then the start of RAM.
 ///
 /// # Errors
 ///
@@ -40,7 +43,7 @@ pub fn load_device_tree(
         .ok_or(DeviceTreeLoadError::NotFound)?;
     let summary = parse_device_tree(blob).map_err(DeviceTreeLoadError::Invalid)?;
     Ok(LoadedDeviceTree {
-        blob_address: blob.as_ptr() as usize,
+        blob_address: virtual_to_physical(blob.as_ptr() as usize),
         summary,
     })
 }

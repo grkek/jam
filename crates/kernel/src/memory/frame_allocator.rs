@@ -7,6 +7,8 @@ use foundation::{
     frame_bitmap::{FrameBitmap, FrameFreeError},
 };
 
+use super::address_translation::{physical_to_virtual, virtual_to_physical};
+
 /// Size of one frame of physical memory.
 pub const FRAME_BYTE_COUNT: usize = 4096;
 
@@ -42,7 +44,8 @@ pub fn initialise_frame_allocator(summary: &DeviceTreeSummary) -> Option<FrameAl
     let storage_word_count = FrameBitmap::required_storage_word_count(frame_count);
     let storage_byte_count = storage_word_count * size_of::<u64>();
 
-    let kernel_end_address = &raw const __kernel_end as usize;
+    // SAFETY: `__kernel_end` is a symbol the linker script defines. Only its address is taken.
+    let kernel_end_address = virtual_to_physical(unsafe { &raw const __kernel_end as usize });
     let storage_address = align_up(kernel_end_address, FRAME_BYTE_COUNT);
     let reserved_end_address = align_up(storage_address + storage_byte_count, FRAME_BYTE_COUNT);
     if reserved_end_address > memory_base_address + memory_byte_count {
@@ -50,11 +53,12 @@ pub fn initialise_frame_allocator(summary: &DeviceTreeSummary) -> Option<FrameAl
     }
 
     // SAFETY: The range from `storage_address` for `storage_byte_count` bytes lies in RAM above the
-    // kernel image, which nothing else uses yet. It is aligned to a frame, so aligned for `u64`.
-    // The flag above guarantees this runs once, so no other reference to the range exists. The
-    // memory is zeroed before it is viewed as initialised words.
+    // kernel image, which nothing else uses yet, and RAM is mapped writable at its direct-map
+    // address. It is aligned to a frame, so aligned for `u64`. The flag above guarantees this runs
+    // once, so no other reference to the range exists. The memory is zeroed before it is viewed as
+    // initialised words.
     let storage = unsafe {
-        let pointer = storage_address as *mut u64;
+        let pointer = physical_to_virtual(storage_address) as *mut u64;
         core::ptr::write_bytes(pointer, 0, storage_word_count);
         core::slice::from_raw_parts_mut(pointer, storage_word_count)
     };

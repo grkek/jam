@@ -1,8 +1,16 @@
-/* Memory layout for QEMU `virt` (RAM begins at 0x4000_0000). */
+/* Memory layout for QEMU `virt` (RAM begins at 0x4000_0000).
+ *
+ * The kernel is loaded at a physical address but runs in the upper half of the address space,
+ * at physical address + KERNEL_OFFSET. Only the boot code and the boot translation tables sit
+ * at their physical addresses, because they run before translation is on.
+ *
+ * KERNEL_OFFSET must match KERNEL_VIRTUAL_OFFSET in memory/address_translation.rs.
+ */
 
 ENTRY(_start)
 
-KERNEL_LOAD_ADDRESS  = 0x40200000;
+KERNEL_PHYSICAL_BASE = 0x40200000;
+KERNEL_OFFSET        = 0xFFFFFF8000000000;
 PAGE_SIZE            = 4096;
 CORE_COUNT           = 8;
 BOOT_STACK_SIZE      = 16384;
@@ -13,11 +21,25 @@ __interrupt_stack_size = INTERRUPT_STACK_SIZE;
 
 SECTIONS
 {
-    . = KERNEL_LOAD_ADDRESS;
+    . = KERNEL_PHYSICAL_BASE;
 
-    .text : {
-        __text_start = .;
+    /* Runs with translation off, so it must sit at its physical address. */
+    .text.boot : {
         KEEP(*(.text.boot))
+    }
+
+    /* Two tables, one per half of the address space, built by the boot code. */
+    .boot_tables (NOLOAD) : ALIGN(PAGE_SIZE) {
+        __boot_tables_start = .;
+        . += 2 * PAGE_SIZE;
+        __boot_tables_end = .;
+    }
+
+    . = ALIGN(PAGE_SIZE);
+    . = . + KERNEL_OFFSET;
+
+    .text : AT(ADDR(.text) - KERNEL_OFFSET) {
+        __text_start = .;
         *(.text .text.*)
         . = ALIGN(PAGE_SIZE);
         __text_end = .;

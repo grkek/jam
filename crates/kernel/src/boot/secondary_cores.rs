@@ -11,7 +11,7 @@ use crate::{
     architecture::aarch64::{
         early_console::EarlyConsole,
         exceptions::install_exception_vectors,
-        memory_management_unit::switch_on_memory_management_unit,
+        memory_management_unit::switch_kernel_translation_root,
         power_interface::{PowerStateCoordinationInterfaceStatus, start_secondary_core},
         processor::{send_event, wait_for_event, write_current_core_index},
         time::{read_counter_frequency, read_counter_value},
@@ -100,7 +100,7 @@ pub extern "C" fn secondary_main(core_index: usize, translation_table_address: u
     // anything can trap. No atomics yet: the memory management unit is still off.
     write_current_core_index(core_index);
 
-    switch_on_memory_management_unit(translation_table_address);
+    switch_kernel_translation_root(translation_table_address);
 
     if !register_current_core(core_index) {
         // This kernel has no room for a core with this index.

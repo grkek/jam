@@ -1,9 +1,8 @@
-//! The kernel's own address space: an identity map with strict permissions.
+//! The kernel's own address space, in the upper half.
 //!
-//! Devices and RAM are mapped one-to-one. Inside the kernel image, code is read-only and
-//! executable, constants are read-only, and everything else is writable and never executable.
-//! This is a stepping stone: once actors run at EL0, the kernel moves to the upper half
-//! (`TTBR1_EL1`) so each actor can own `TTBR0_EL1`.
+//! Devices and all of RAM appear at `physical address + KERNEL_VIRTUAL_OFFSET`. Inside the kernel
+//! image, code is read-only and executable, constants are read-only, and everything else is
+//! writable and never executable. The lower half stays empty, ready for each actor's own space.
 
 use foundation::{
     device_tree::DeviceTreeSummary,
@@ -15,9 +14,10 @@ use foundation::{
 
 use super::{
     address_space::{AddressSpace, MapError},
+    address_translation::{physical_to_virtual, virtual_to_physical},
     frame_allocator::FrameAllocator,
 };
-use crate::architecture::aarch64::memory_management_unit::switch_on_memory_management_unit;
+use crate::architecture::aarch64::memory_management_unit::switch_kernel_translation_root;
 
 /// Start of the device region on QEMU `virt`: interrupt controller, UART, and friends.
 const DEVICE_REGION_START_ADDRESS: usize = 0x0800_0000;
@@ -66,13 +66,15 @@ fn align_up(address: usize, alignment: usize) -> usize {
     align_down(address + alignment - 1, alignment)
 }
 
-/// Builds the kernel address space and switches the memory management unit on.
+/// Builds the kernel address space and makes the calling core use it.
 ///
-/// The returned address space owns the translation tables and must stay alive.
+/// The boot code already turned translation on with coarse tables. This replaces them with
+/// strict ones and switches off the lower half. The returned address space owns the translation
+/// tables and must stay alive.
 ///
 /// # Errors
 ///
-/// Fails when the memory layout cannot be represented. Nothing has been switched on in that case.
+/// Fails when the memory layout cannot be represented. Nothing has been switched in that case.
 pub fn enable_kernel_address_space(
     summary: &DeviceTreeSummary,
     frame_allocator: &mut FrameAllocator,
@@ -83,12 +85,14 @@ pub fn enable_kernel_address_space(
     let data = PageAttributes::new(MemoryKind::Normal, KernelAccess::ReadWrite, false)?;
 
     // SAFETY: These symbols come from the linker script. Only their addresses are taken.
-    let (text_start, text_end, rodata_start, rodata_end) = (
-        &raw const __text_start as usize,
-        &raw const __text_end as usize,
-        &raw const __rodata_start as usize,
-        &raw const __rodata_end as usize,
-    );
+    let (text_start, text_end, rodata_start, rodata_end) = unsafe {
+        (
+            &raw const __text_start as usize,
+            &raw const __text_end as usize,
+            &raw const __rodata_start as usize,
+            &raw const __rodata_end as usize,
+        )
+    };
 
     let memory_start = usize::try_from(summary.memory_base_address)
         .map_err(|_| KernelMapError::MemoryRegionUnsupported)?;
@@ -96,40 +100,58 @@ pub fn enable_kernel_address_space(
         .map_err(|_| KernelMapError::MemoryRegionUnsupported)?;
     let memory_end = memory_start + memory_byte_count;
 
-    let image_block_start = align_down(text_start, BLOCK_BYTE_COUNT);
+    let image_block_start = align_down(virtual_to_physical(text_start), BLOCK_BYTE_COUNT);
     let image_block_end = image_block_start + BLOCK_BYTE_COUNT;
-    if rodata_end > image_block_end || text_start < memory_start {
+    if virtual_to_physical(rodata_end) > image_block_end
+        || virtual_to_physical(text_start) < memory_start
+    {
         return Err(KernelMapError::ImageOutsideBlock);
     }
 
     let mut address_space =
         AddressSpace::new(frame_allocator).ok_or(KernelMapError::AddressSpaceUnavailable)?;
 
-    for block_address in
+    for physical_address in
         (DEVICE_REGION_START_ADDRESS..DEVICE_REGION_END_ADDRESS).step_by(BLOCK_BYTE_COUNT)
     {
-        address_space.map_block(frame_allocator, block_address, block_address, device)?;
+        address_space.map_block(
+            frame_allocator,
+            physical_to_virtual(physical_address),
+            physical_address,
+            device,
+        )?;
     }
 
     let first_block = align_down(memory_start, BLOCK_BYTE_COUNT);
     let last_block_end = align_up(memory_end, BLOCK_BYTE_COUNT);
-    for block_address in (first_block..last_block_end).step_by(BLOCK_BYTE_COUNT) {
-        if block_address != image_block_start {
-            address_space.map_block(frame_allocator, block_address, block_address, data)?;
+    for physical_address in (first_block..last_block_end).step_by(BLOCK_BYTE_COUNT) {
+        if physical_address != image_block_start {
+            address_space.map_block(
+                frame_allocator,
+                physical_to_virtual(physical_address),
+                physical_address,
+                data,
+            )?;
         }
     }
 
-    for page_address in (image_block_start..image_block_end).step_by(PAGE_BYTE_COUNT) {
-        let attributes = if (text_start..text_end).contains(&page_address) {
+    for physical_address in (image_block_start..image_block_end).step_by(PAGE_BYTE_COUNT) {
+        let virtual_address = physical_to_virtual(physical_address);
+        let attributes = if (text_start..text_end).contains(&virtual_address) {
             code
-        } else if (rodata_start..rodata_end).contains(&page_address) {
+        } else if (rodata_start..rodata_end).contains(&virtual_address) {
             constants
         } else {
             data
         };
-        address_space.map_page(frame_allocator, page_address, page_address, attributes)?;
+        address_space.map_page(
+            frame_allocator,
+            virtual_address,
+            physical_address,
+            attributes,
+        )?;
     }
 
-    switch_on_memory_management_unit(address_space.root_table_address());
+    switch_kernel_translation_root(address_space.root_table_address());
     Ok(address_space)
 }
