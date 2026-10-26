@@ -5,13 +5,10 @@
 //! and the handler runs on the core's own interrupt stack, so another core can resume the actor
 //! the moment it is queued.
 
-use core::fmt::Write;
-
 use super::core_local::{CoreLocal, NO_ACTOR, core_locals, current_core_local};
 use crate::{
     actors::{control_block::ActorState, table::with_control_block},
     architecture::aarch64::{
-        early_console::EarlyConsole,
         generic_timer::{rearm_tick, start_tick},
         interrupt_controller::initialise_core_interface,
         processor::enable_interrupts,
@@ -57,7 +54,7 @@ fn rebalance(core_local: &CoreLocal) {
             continue;
         }
         let length = other_core_local.run_queue().lock().length();
-        if busiest.map_or(true, |(_, longest)| length > longest) {
+        if busiest.is_none_or(|(_, longest)| length > longest) {
             busiest = Some((other_core_local, length));
         }
     }
@@ -133,18 +130,10 @@ fn schedule(core_local: &CoreLocal, interrupted_frame_address: usize) -> usize {
 #[must_use]
 pub fn on_timer_tick(interrupted_frame_address: usize) -> usize {
     rearm_tick(tick_interval());
+
     let Some(core_local) = current_core_local() else {
         return interrupted_frame_address;
     };
-
-    let tick_count = core_local.increment_tick_count();
-    if core_local.core_index() == 0 && tick_count % TICKS_PER_SECOND == 0 {
-        let _ = writeln!(
-            EarlyConsole,
-            "Heartbeat: {} seconds since the timer started",
-            tick_count / TICKS_PER_SECOND
-        );
-    }
 
     schedule(core_local, interrupted_frame_address)
 }

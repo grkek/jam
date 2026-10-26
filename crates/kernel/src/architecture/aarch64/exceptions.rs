@@ -5,8 +5,10 @@
 
 use core::fmt::Write;
 
+use foundation::device_tree::PowerStateCoordinationInterfaceConduit;
+
 use super::{early_console::EarlyConsole, interrupts::handle_interrupt};
-use crate::boot::entry::halt;
+use crate::architecture::aarch64::power_interface;
 
 core::arch::global_asm!(include_str!("exception_vectors.s"));
 
@@ -162,5 +164,5 @@ fn report_fault_and_halt(trap_frame: &TrapFrame) -> ! {
         }
         let _ = writeln!(console);
     }
-    halt()
+    power_interface::system_off(PowerStateCoordinationInterfaceConduit::SecureMonitorCall)
 }

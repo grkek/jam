@@ -60,6 +60,7 @@ impl TableFrame {
     }
 
     /// Writes the entry at `index`. Returns `None` when the index is outside the table.
+    #[must_use]
     pub fn write(self, index: usize, entry: PageTableEntry) -> Option<()> {
         if index >= ENTRIES_PER_TABLE {
             return None;

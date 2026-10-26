@@ -5,7 +5,6 @@
 
 use core::{
     cell::UnsafeCell,
-    hint::spin_loop,
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -39,7 +38,7 @@ impl<Value> SpinLock<Value> {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            spin_loop();
+            core::hint::spin_loop();
         }
         SpinLockGuard {
             lock: self,

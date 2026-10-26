@@ -48,7 +48,7 @@ pub fn read_current_core_index() -> Result<usize, core::num::TryFromIntError> {
         );
     }
 
-    return usize::try_from(core_index);
+    usize::try_from(core_index)
 }
 
 /// Records the kernel's index for this core in `TPIDR_EL1`.

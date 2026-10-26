@@ -1,4 +1,4 @@
-//! The firmware's Power State Coordination Interface (`POWER_STATE_COORDINATION_INTERFACE`): starting cores.
+//! The firmware's Power State Coordination Interface (`PSCI`): starting cores.
 
 use foundation::device_tree::PowerStateCoordinationInterfaceConduit;
 
@@ -63,7 +63,7 @@ fn call_firmware(
     third_argument: u64,
 ) -> i64 {
     let return_value: u64;
-    // SAFETY: POWER_STATE_COORDINATION_INTERFACE calls follow the SMC calling convention: arguments in `x0` to `x3`, the result in
+    // SAFETY: PSCI calls follow the SMC calling convention: arguments in `x0` to `x3`, the result in
     // `x0`, and the other caller-saved registers possibly clobbered, which `clobber_abi` declares.
     // `CPU_ON` starts another core at an address this kernel chose and does not touch the caller's
     // memory.
@@ -90,6 +90,31 @@ fn call_firmware(
         }
     }
     i64::from_ne_bytes(return_value.to_ne_bytes())
+}
+
+use core::arch::asm;
+
+use crate::memory::address_translation::KERNEL_VIRTUAL_OFFSET;
+
+/// Shuts down the`AArch64` processing execution state and kills the host QEMU process.
+pub fn system_off(_conduit: foundation::device_tree::PowerStateCoordinationInterfaceConduit) -> ! {
+    unsafe {
+        // This stops the CPU architecture from processing any background ticks or throwing exceptions.
+        asm!("msr daifset, #15", options(nostack));
+
+        // 2. Write the absolute magic power-down command to QEMU's virtual board test device register.
+        // Base peripheral space: 0x0900_0000 + structural kernel virtual memory offset.
+        let qemu_syscon_power_reg = (KERNEL_VIRTUAL_OFFSET + 0x0900_0000) as *mut u32;
+
+        // Magic value 0x5555 forces QEMU to instantly terminate its process execution.
+        core::ptr::write_volatile(qemu_syscon_power_reg, 0x5555);
+
+        // 3. If QEMU's power register fails to clear, spin execution down
+        // to a complete halt so the instruction pipeline remains dead.
+        loop {
+            asm!("wfe", options(nostack));
+        }
+    }
 }
 
 /// Starts a core at the kernel's secondary entry point.

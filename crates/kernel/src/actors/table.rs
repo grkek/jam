@@ -35,19 +35,24 @@ pub fn spawn_kernel_actor(
 ) -> Result<LocalAddress, SpawnError> {
     for (slot_index, slot) in ACTOR_TABLE.iter().enumerate() {
         let mut control_block = slot.lock();
+
         if control_block.state != ActorState::Free {
             continue;
         }
+
         let frame_address = prepare_first_frame(slot_index, entry_point as usize)
             .ok_or(SpawnError::StackUnavailable)?;
+
         control_block.state = ActorState::Runnable;
         control_block.parent_address = parent_address;
         control_block.configuration = Some(configuration);
         control_block.saved_frame_address = frame_address;
-        let generation_counter = control_block.generation_counter;
-        drop(control_block);
 
+        let generation_counter = control_block.generation_counter;
+
+        drop(control_block);
         enqueue_runnable(slot_index);
+
         let slot_number = u32::try_from(slot_index).map_err(|_| SpawnError::TableFull)?;
         return Ok(LocalAddress::new(slot_number, generation_counter));
     }

@@ -120,7 +120,7 @@ pub fn register_current_core(core_index: usize) -> bool {
 /// The calling core's index.
 #[must_use]
 pub fn current_core_index() -> usize {
-    return read_current_core_index().unwrap_or(usize::max_value());
+    read_current_core_index().unwrap_or(usize::MAX)
 }
 
 /// The calling core's data, or `None` before the core has registered.

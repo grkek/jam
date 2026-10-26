@@ -33,6 +33,7 @@ pub fn stack_top_address(slot_index: usize) -> Option<usize> {
 /// Writes the frame a new actor resumes from at the top of its stack and returns its address.
 ///
 /// Resuming that frame starts execution at `entry_point_address` on this stack.
+#[must_use]
 pub fn prepare_first_frame(slot_index: usize, entry_point_address: usize) -> Option<usize> {
     let frame_address = stack_top_address(slot_index)? - size_of::<TrapFrame>();
     let frame = TrapFrame {
