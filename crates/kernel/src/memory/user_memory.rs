@@ -14,9 +14,9 @@ use super::{
 use crate::architecture::aarch64::cache_maintenance::make_code_visible;
 
 /// Where the self-test maps its code page.
-const TEST_CODE_ADDRESS: usize = 0x40_0000;
+pub const TEST_CODE_ADDRESS: usize = 0x40_0000;
 /// Where the self-test maps its two data pages.
-const TEST_DATA_ADDRESS: usize = 0x80_0000;
+pub const TEST_DATA_ADDRESS: usize = 0x80_0000;
 /// An address the self-test leaves unmapped.
 const TEST_UNMAPPED_ADDRESS: usize = 0xc0_0000;
 const TEST_CODE_BYTES: &[u8] = b"JAM!";

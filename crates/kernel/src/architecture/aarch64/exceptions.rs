@@ -24,6 +24,8 @@ const EXCEPTION_CLASS_SHIFT: u64 = 26;
 const EXCEPTION_CLASS_MASK: u64 = 0x3f;
 const VECTORS_PER_SOURCE: u64 = 4;
 const IRQ_CURRENT_LEVEL_SPX_VECTOR_INDEX: u64 = 5;
+const IRQ_LOWER_AARCH64_VECTOR_INDEX: u64 = 9;
+const LOWER_AARCH64_SYNCHRONOUS_VECTOR_INDEX: u64 = 8;
 
 const EXCEPTION_CLASS_UNKNOWN: u64 = 0x00;
 const EXCEPTION_CLASS_SUPERVISOR_CALL: u64 = 0x15;
@@ -59,6 +61,10 @@ pub struct TrapFrame {
     pub fault_address_register: u64,
     /// Which of the 16 vector entries was taken.
     pub vector_index: u64,
+    /// `SP_EL0`: the stack pointer used at EL0.
+    pub stack_pointer_el0: u64,
+    /// Keeps the frame a multiple of 16 bytes.
+    pub _padding: u64,
 }
 
 /// Installs the vector table on the calling core.
@@ -103,12 +109,26 @@ fn exception_class_name(exception_class: u64) -> &'static str {
 /// Called from `exception_vectors.s` on the core's interrupt stack. Returns the frame to resume.
 #[unsafe(no_mangle)]
 pub extern "C" fn exception_handler(trap_frame: *mut TrapFrame) -> *mut TrapFrame {
-    // SAFETY: The vector entry passes the frame it just saved on the interrupted stack, and
-    // nothing else touches it while the handler runs.
+    // SAFETY: The vector entry passes the frame it just saved on the interrupted stack.
     let frame = unsafe { &*trap_frame };
-    if frame.vector_index == IRQ_CURRENT_LEVEL_SPX_VECTOR_INDEX {
+
+    // Timer (and other) IRQs — whether taken from EL1 or EL0.
+    if frame.vector_index == IRQ_CURRENT_LEVEL_SPX_VECTOR_INDEX
+        || frame.vector_index == IRQ_LOWER_AARCH64_VECTOR_INDEX
+    {
         return handle_interrupt(trap_frame as usize) as *mut TrapFrame;
     }
+
+    let exception_class =
+        (frame.exception_syndrome_register >> EXCEPTION_CLASS_SHIFT) & EXCEPTION_CLASS_MASK;
+
+    // Temporary: any SVC from EL0 is a no-op. ELR already points past the `svc`.
+    if frame.vector_index == LOWER_AARCH64_SYNCHRONOUS_VECTOR_INDEX
+        && exception_class == EXCEPTION_CLASS_SUPERVISOR_CALL
+    {
+        return trap_frame;
+    }
+
     report_fault_and_halt(frame)
 }
 

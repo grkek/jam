@@ -9,11 +9,12 @@
 //   source: 0 current level SP0, 1 current level SPx, 2 lower level `AArch64`, 3 lower level AArch32
 //   kind:   0 synchronous, 1 IRQ, 2 FIQ, 3 SError
 //
-// Trap frame (288 bytes, matches `TrapFrame` in exceptions.rs):
-//   0..240  x0 to x30    248 ELR_EL1    256 SPSR_EL1
+// Trap frame (304 bytes, matches `TrapFrame` in exceptions.rs):
+//   0..248  x0 to x30    248 ELR_EL1    256 SPSR_EL1
 //   264 ESR_EL1          272 FAR_EL1    280 vector index
+//   288 SP_EL0           296 padding to 16-byte size
 
-	.equ	TRAP_FRAME_SIZE, 288
+	.equ	TRAP_FRAME_SIZE, 304
 
 	.macro	vector_entry index
 	.balign	0x80
@@ -70,6 +71,8 @@ exception_common:
 	mrs	x3, far_el1
 	stp	x2, x3, [sp, #264]
 	str	x0, [sp, #280]
+	mrs	x2, sp_el0
+	str	x2, [sp, #288]
 
 	// Run the handler on this core's interrupt stack, so the interrupted stack stays untouched
 	// and another core can safely resume it once the frame is saved.
@@ -88,6 +91,8 @@ exception_common:
 	ldp	x2, x3, [sp, #248]
 	msr	elr_el1, x2
 	msr	spsr_el1, x3
+	ldr	x2, [sp, #288]
+	msr	sp_el0, x2
 	ldr	x30, [sp, #240]
 	ldp	x28, x29, [sp, #224]
 	ldp	x26, x27, [sp, #208]
