@@ -8,6 +8,7 @@ use foundation::{
 };
 
 use super::address_translation::{physical_to_virtual, virtual_to_physical};
+use crate::synchronization::spin_lock::SpinLock;
 
 /// Size of one frame of physical memory.
 pub const FRAME_BYTE_COUNT: usize = 4096;
@@ -106,4 +107,18 @@ impl FrameAllocator {
     pub const fn free_frame_count(&self) -> usize {
         self.bitmap.free_frame_count()
     }
+}
+
+static GLOBAL_FRAME_ALLOCATOR: SpinLock<Option<FrameAllocator>> = SpinLock::new(None);
+
+/// Hands the allocator to the rest of the kernel. Called once, after boot setup.
+pub fn install_frame_allocator(frame_allocator: FrameAllocator) {
+    *GLOBAL_FRAME_ALLOCATOR.lock() = Some(frame_allocator);
+}
+
+/// Runs `operation` with the allocator, or returns `None` before it is installed.
+pub fn with_frame_allocator<Output>(
+    operation: impl FnOnce(&mut FrameAllocator) -> Output,
+) -> Option<Output> {
+    GLOBAL_FRAME_ALLOCATOR.lock().as_mut().map(operation)
 }

@@ -2,28 +2,68 @@
 
 use core::fmt::Write;
 
-use super::device_tree::load_device_tree;
-use super::secondary_cores::start_secondary_cores;
-use foundation::device_tree::PowerStateCoordinationInterfaceConduit;
+use foundation::{
+    configuration::Configuration, device_tree::PowerStateCoordinationInterfaceConduit,
+};
 
+use super::{device_tree::load_device_tree, secondary_cores::start_secondary_cores};
 use crate::{
+    actors::table::spawn_kernel_actor,
     architecture::aarch64::{
-        early_console::EarlyConsole, exceptions::install_exception_vectors,
-        interrupt_controller::initialise_distributor, power_interface, processor,
-        time::read_counter_value,
+        early_console::EarlyConsole,
+        exceptions::install_exception_vectors,
+        interrupt_controller::initialise_distributor,
+        power_interface, processor,
+        time::{read_counter_frequency, read_counter_value},
     },
     error, information,
     memory::{
-        frame_allocator::initialise_frame_allocator,
+        frame_allocator::{initialise_frame_allocator, install_frame_allocator},
         kernel_image::{kernel_image_end_address, kernel_image_start_address},
         kernel_map::enable_kernel_address_space,
+        private_page::{PRIVATE_VALUE_STRIDE, read_private_value, write_private_value},
     },
-    scheduling::{core_local::register_current_core, scheduler::start_current_core_tick},
+    scheduling::{
+        core_local::{current_core_index, register_current_core},
+        scheduler::start_current_core_tick,
+    },
     warning,
 };
 
 const BYTES_PER_MEGABYTE: u64 = 1024 * 1024;
 const SELF_TEST_FRAME_COUNT: usize = 2;
+const DEMONSTRATION_ACTOR_COUNT: usize = 16;
+
+/// Temporary: every actor proves once a second that its private page is its own.
+extern "C" fn demonstration_actor() -> ! {
+    let slot_index = read_private_value() / PRIVATE_VALUE_STRIDE;
+    let report_interval = read_counter_frequency();
+    let mut last_report_ticks = read_counter_value();
+    let mut report_count = 0_u64;
+
+    loop {
+        let now_ticks = read_counter_value();
+        if now_ticks.wrapping_sub(last_report_ticks) >= report_interval {
+            last_report_ticks = now_ticks;
+            report_count += 1;
+
+            let expected = slot_index * PRIVATE_VALUE_STRIDE + report_count;
+            write_private_value(expected);
+            let stored = read_private_value();
+            let verdict = if stored == expected {
+                "isolated"
+            } else {
+                "MIXED UP"
+            };
+            let _ = writeln!(
+                EarlyConsole,
+                "Actor {slot_index} on core {}: private page {stored} ({verdict})",
+                current_core_index()
+            );
+        }
+        core::hint::spin_loop();
+    }
+}
 
 /// Allocates and releases frames to prove the allocator still works with the MMU on.
 fn run_frame_allocator_self_test(
@@ -215,7 +255,17 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     run_frame_allocator_self_test(boot_ticks, &mut frame_allocator);
 
+    // From here on the kernel allocates memory through the shared allocator.
+    install_frame_allocator(frame_allocator);
+
     initialise_distributor();
+
+    for _ in 0..DEMONSTRATION_ACTOR_COUNT {
+        match spawn_kernel_actor(demonstration_actor, None, Configuration::default()) {
+            Ok(address) => information!(EarlyConsole, boot_ticks, "Spawned actor {address:?}"),
+            Err(error) => error!(EarlyConsole, boot_ticks, "Could not spawn actor: {error:?}"),
+        }
+    }
 
     start_secondary_cores(
         &mut EarlyConsole,

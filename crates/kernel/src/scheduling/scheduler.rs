@@ -11,6 +11,7 @@ use crate::{
     architecture::aarch64::{
         generic_timer::{rearm_tick, start_tick},
         interrupt_controller::initialise_core_interface,
+        memory_management_unit::{activate_lower_half, deactivate_lower_half},
         processor::enable_interrupts,
         time,
     },
@@ -104,25 +105,40 @@ fn schedule(core_local: &CoreLocal, interrupted_frame_address: usize) -> usize {
     let next = next_slot_index.and_then(|slot_index| {
         with_control_block(slot_index, |control_block| {
             control_block.state = ActorState::Running;
-            control_block.saved_frame_address
+            let lower_half = control_block.address_space.as_ref().map(|space| {
+                (
+                    space.root_table_address(),
+                    control_block.address_space_identifier,
+                )
+            });
+            (control_block.saved_frame_address, lower_half)
         })
-        .map(|frame_address| (slot_index, frame_address))
+        .map(|(frame_address, lower_half)| (slot_index, frame_address, lower_half))
     });
 
     match next {
-        Some((slot_index, frame_address)) => {
+        Some((slot_index, frame_address, lower_half)) => {
             if current_slot_index != NO_ACTOR {
                 let _ = with_control_block(current_slot_index, |control_block| {
                     control_block.state = ActorState::Runnable;
                 });
                 let _ = core_local.run_queue().lock().push_back(current_slot_index);
             }
+            match lower_half {
+                Some((root_table_address, identifier)) => {
+                    activate_lower_half(root_table_address, identifier);
+                }
+                None => deactivate_lower_half(),
+            }
             core_local.set_current_slot_index(slot_index);
             frame_address
         }
         // Nothing else to run: the current actor keeps the core.
         None if current_slot_index != NO_ACTOR => interrupted_frame_address,
-        None => core_local.idle_frame_address(),
+        None => {
+            deactivate_lower_half();
+            core_local.idle_frame_address()
+        }
     }
 }
 
