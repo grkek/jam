@@ -21,8 +21,10 @@ pub fn dispatch(trap_frame: *mut TrapFrame) -> *mut TrapFrame {
     match SystemCall::try_from(call_number) {
         Ok(SystemCall::CurrentAddress) => {
             let (status, value) = current_address();
+
             frame.general_registers[STATUS_REGISTER] = status.number();
             frame.general_registers[VALUE_REGISTER] = value;
+
             trap_frame
         }
         Ok(SystemCall::FinishActor) => finish_actor(trap_frame),

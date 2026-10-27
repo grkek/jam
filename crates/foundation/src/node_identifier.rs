@@ -113,6 +113,16 @@ impl NodeIdentifier {
     }
 }
 
+impl core::fmt::Display for NodeIdentifier {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:02x}", self.scheme.number())?;
+        for byte in &self.public_key_hash {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

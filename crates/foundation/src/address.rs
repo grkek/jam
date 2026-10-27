@@ -78,6 +78,12 @@ impl LocalAddress {
     }
 }
 
+impl core::fmt::Display for LocalAddress {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "<0.{}.{}>", self.slot_index, self.generation_counter)
+    }
+}
+
 /// Address of an actor on another node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RemoteAddress {
@@ -108,6 +114,18 @@ impl RemoteAddress {
     }
 }
 
+impl core::fmt::Display for RemoteAddress {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "<{}.{}.{}>",
+            self.node_identifier,
+            self.local_address.slot_index(),
+            self.local_address.generation_counter()
+        )
+    }
+}
+
 /// Reference to an actor, with locality made explicit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Address {
@@ -115,6 +133,15 @@ pub enum Address {
     Local(LocalAddress),
     /// The actor lives on another node and is reached through distribution.
     Remote(RemoteAddress),
+}
+
+impl core::fmt::Display for Address {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Local(local) => write!(f, "{local}"),
+            Self::Remote(remote) => write!(f, "{remote}"),
+        }
+    }
 }
 
 /// Why bytes could not be read as an address.
@@ -279,5 +306,14 @@ mod tests {
             Address::from_wire_bytes(&wire_bytes),
             Err(AddressWireError::NonCanonicalLocalAddress)
         );
+    }
+
+    #[test]
+    fn address_display_format() {
+        let local_address = LocalAddress::new(0, 0);
+        assert_eq!(std::format!("{local_address}"), "<0.0.0>");
+
+        let address = Address::Local(LocalAddress::new(5, 12));
+        assert_eq!(std::format!("{address}"), "<0.5.12>");
     }
 }
