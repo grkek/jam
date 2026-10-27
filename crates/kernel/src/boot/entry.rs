@@ -31,8 +31,6 @@ use crate::{
 
 const BYTES_PER_MEGABYTE: u64 = 1024 * 1024;
 const SELF_TEST_FRAME_COUNT: usize = 2;
-/// Busy-wait iterations so the first EL0 actor can run `FinishActor` before the second spawn.
-const ACTOR_FINISH_WAIT_ITERATIONS: usize = 2_000_000;
 
 /// Allocates and releases frames to prove the allocator still works with the MMU on.
 fn run_frame_allocator_self_test(

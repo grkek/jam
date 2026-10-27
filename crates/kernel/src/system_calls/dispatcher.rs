@@ -1,9 +1,7 @@
 //! Routes a supervisor call to the matching handler.
-use core::fmt::Write;
-
 use foundation::{system_call::SystemCall, system_call_status::SystemCallStatus};
 
-use crate::architecture::aarch64::{early_console::EarlyConsole, exceptions::TrapFrame};
+use crate::architecture::aarch64::exceptions::TrapFrame;
 
 use super::actor_calls::{current_address, finish_actor};
 
@@ -18,8 +16,6 @@ const VALUE_REGISTER: usize = 1;
 pub fn dispatch(trap_frame: *mut TrapFrame) -> *mut TrapFrame {
     // SAFETY: The exception vector just saved this frame; we own it until resume.
     let frame = unsafe { &mut *trap_frame };
-
-    let _ = writeln!(EarlyConsole, "SVC x8={:#x}", frame.general_registers[8]);
 
     let call_number = frame.general_registers[SYSTEM_CALL_NUMBER_REGISTER];
     match SystemCall::try_from(call_number) {
