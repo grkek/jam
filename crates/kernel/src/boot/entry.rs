@@ -22,12 +22,17 @@ use crate::{
         kernel_image::{kernel_image_end_address, kernel_image_start_address},
         kernel_map::enable_kernel_address_space,
     },
-    scheduling::{core_local::register_current_core, scheduler::start_current_core_tick},
+    scheduling::{
+        core_local::register_current_core, idle::install_idle_frames,
+        scheduler::start_current_core_tick,
+    },
     warning,
 };
 
 const BYTES_PER_MEGABYTE: u64 = 1024 * 1024;
 const SELF_TEST_FRAME_COUNT: usize = 2;
+/// Busy-wait iterations so the first EL0 actor can run `FinishActor` before the second spawn.
+const ACTOR_FINISH_WAIT_ITERATIONS: usize = 2_000_000;
 
 /// Allocates and releases frames to prove the allocator still works with the MMU on.
 fn run_frame_allocator_self_test(
@@ -100,6 +105,9 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
         power_interface::system_off(PowerStateCoordinationInterfaceConduit::SecureMonitorCall);
     }
+
+    // Every core needs a real frame to resume when the run queue is empty.
+    install_idle_frames();
 
     information!(
         EarlyConsole,
@@ -243,14 +251,7 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     initialise_distributor();
 
-    match spawn_user_actor(None, Configuration::default()) {
-        Ok(address) => information!(EarlyConsole, boot_ticks, "Spawned EL0 actor {address:?}"),
-        Err(error) => error!(
-            EarlyConsole,
-            boot_ticks, "Could not spawn EL0 actor: {error:?}"
-        ),
-    }
-
+    // Secondary cores and the timer must be live before an actor can finish and land in idle.
     start_secondary_cores(
         &mut EarlyConsole,
         boot_ticks,
@@ -259,6 +260,61 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
     );
 
     start_current_core_tick();
+
+    let free_before =
+        with_frame_allocator(|frame_allocator| frame_allocator.free_frame_count()).unwrap_or(0);
+
+    match spawn_user_actor(None, Configuration::default()) {
+        Ok(address) => information!(
+            EarlyConsole,
+            boot_ticks,
+            "Spawned EL0 actor {address:?} (free frames: {free_before})"
+        ),
+        Err(error) => error!(
+            EarlyConsole,
+            boot_ticks, "Could not spawn EL0 actor: {error:?}"
+        ),
+    }
+
+    // Wait until FinishActor has returned the actor's frames (or we give up).
+    let mut free_after_finish = free_before;
+    const RECLAIM_POLL_ATTEMPTS: usize = 100;
+    const RECLAIM_POLL_SPINS: usize = 500_000;
+    for attempt in 0..RECLAIM_POLL_ATTEMPTS {
+        free_after_finish =
+            with_frame_allocator(|frame_allocator| frame_allocator.free_frame_count()).unwrap_or(0);
+        if free_after_finish >= free_before {
+            information!(
+                EarlyConsole,
+                boot_ticks,
+                "Actor reclaim passed on attempt {attempt}: free frames {free_after_finish}"
+            );
+            break;
+        }
+        for _ in 0..RECLAIM_POLL_SPINS {
+            core::hint::spin_loop();
+        }
+    }
+
+    if free_after_finish < free_before {
+        warning!(
+            EarlyConsole,
+            boot_ticks,
+            "Actor reclaim mismatch: free frames before {free_before}, after finish {free_after_finish}"
+        );
+    }
+
+    match spawn_user_actor(None, Configuration::default()) {
+        Ok(address) => information!(
+            EarlyConsole,
+            boot_ticks,
+            "Spawned second EL0 actor {address:?} (expected generation 2 on slot 0)"
+        ),
+        Err(error) => error!(
+            EarlyConsole,
+            boot_ticks, "Could not spawn second EL0 actor: {error:?}"
+        ),
+    }
 
     information!(EarlyConsole, boot_ticks, "Done.");
 

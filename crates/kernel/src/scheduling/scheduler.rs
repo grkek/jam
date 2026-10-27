@@ -142,6 +142,44 @@ fn schedule(core_local: &CoreLocal, interrupted_frame_address: usize) -> usize {
     }
 }
 
+/// After `FinishActor`: current slot is already `NO_ACTOR`. Pick the next runnable frame.
+#[must_use]
+pub fn pick_next_after_finish(core_local: &CoreLocal) -> usize {
+    rebalance(core_local);
+    let next_slot_index = core_local.run_queue().lock().pop_front();
+
+    let next = next_slot_index.and_then(|slot_index| {
+        with_control_block(slot_index, |control_block| {
+            control_block.state = ActorState::Running;
+            let lower_half = control_block.address_space.as_ref().map(|space| {
+                (
+                    space.root_table_address(),
+                    control_block.address_space_identifier,
+                )
+            });
+            (control_block.saved_frame_address, lower_half)
+        })
+        .map(|(frame_address, lower_half)| (slot_index, frame_address, lower_half))
+    });
+
+    match next {
+        Some((slot_index, frame_address, lower_half)) => {
+            match lower_half {
+                Some((root_table_address, identifier)) => {
+                    activate_lower_half(root_table_address, identifier);
+                }
+                None => deactivate_lower_half(),
+            }
+            core_local.set_current_slot_index(slot_index);
+            frame_address
+        }
+        None => {
+            deactivate_lower_half();
+            core_local.idle_frame_address()
+        }
+    }
+}
+
 /// Handles the timer interrupt and returns the address of the frame to resume.
 #[must_use]
 pub fn on_timer_tick(interrupted_frame_address: usize) -> usize {

@@ -8,7 +8,7 @@ use core::fmt::Write;
 use foundation::device_tree::PowerStateCoordinationInterfaceConduit;
 
 use super::{early_console::EarlyConsole, interrupts::handle_interrupt};
-use crate::architecture::aarch64::power_interface;
+use crate::{architecture::aarch64::power_interface, system_calls::dispatcher};
 
 core::arch::global_asm!(include_str!("exception_vectors.s"));
 
@@ -122,11 +122,10 @@ pub extern "C" fn exception_handler(trap_frame: *mut TrapFrame) -> *mut TrapFram
     let exception_class =
         (frame.exception_syndrome_register >> EXCEPTION_CLASS_SHIFT) & EXCEPTION_CLASS_MASK;
 
-    // Temporary: any SVC from EL0 is a no-op. ELR already points past the `svc`.
     if frame.vector_index == LOWER_AARCH64_SYNCHRONOUS_VECTOR_INDEX
         && exception_class == EXCEPTION_CLASS_SUPERVISOR_CALL
     {
-        return trap_frame;
+        return dispatcher::dispatch(trap_frame);
     }
 
     report_fault_and_halt(frame)

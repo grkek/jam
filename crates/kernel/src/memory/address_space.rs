@@ -1,8 +1,10 @@
 //! A set of translation tables describing what an execution context may touch.
 
 use foundation::page_table_entry::{
-    BLOCK_BYTE_COUNT, PAGE_BYTE_COUNT, PageAttributes, PageTableEntry,
+    BLOCK_BYTE_COUNT, ENTRIES_PER_TABLE, PAGE_BYTE_COUNT, PageAttributes, PageTableEntry,
 };
+
+use crate::memory::frame_allocator::FRAME_BYTE_COUNT;
 
 use super::{frame_allocator::FrameAllocator, page_tables::TableFrame};
 
@@ -34,6 +36,51 @@ pub struct AddressSpace {
 
 fn table_index(virtual_address: usize, shift: usize) -> usize {
     (virtual_address >> shift) & TABLE_INDEX_MASK
+}
+
+fn free_table(table: TableFrame, level: u8, frame_allocator: &mut FrameAllocator) {
+    for index in 0..ENTRIES_PER_TABLE {
+        let Some(entry) = table.read(index) else {
+            continue;
+        };
+        if !entry.is_valid() {
+            continue;
+        }
+        let output = match usize::try_from(entry.output_address()) {
+            Ok(address) => address,
+            Err(_) => continue,
+        };
+
+        match level {
+            // Level 1: only next-level tables.
+            1 if entry.is_table_or_page() => {
+                free_table(
+                    TableFrame::from_physical_address(output),
+                    2,
+                    frame_allocator,
+                );
+            }
+            // Level 2: table → level 3, or 2 MiB block (free 512 frames).
+            2 if entry.is_table_or_page() => {
+                free_table(
+                    TableFrame::from_physical_address(output),
+                    3,
+                    frame_allocator,
+                );
+            }
+            2 => {
+                for frame_index in 0..(BLOCK_BYTE_COUNT / FRAME_BYTE_COUNT) {
+                    let _ = frame_allocator.free_frame(output + frame_index * FRAME_BYTE_COUNT);
+                }
+            }
+            // Level 3: leaf page.
+            3 => {
+                let _ = frame_allocator.free_frame(output);
+            }
+            _ => {}
+        }
+    }
+    let _ = frame_allocator.free_frame(table.physical_address());
 }
 
 fn is_canonical(virtual_address: usize) -> bool {
@@ -173,5 +220,12 @@ impl AddressSpace {
         }
         let entry = table.read(table_index(virtual_address, LEVEL_THREE_SHIFT))?;
         entry.is_valid().then_some(entry)
+    }
+
+    /// Returns every frame this space owns (tables and mapped pages) to the allocator.
+    ///
+    /// Only call this after no core still has this root in `TTBR0_EL1`.
+    pub fn destroy(self, frame_allocator: &mut FrameAllocator) {
+        free_table(self.root_table, 1, frame_allocator);
     }
 }

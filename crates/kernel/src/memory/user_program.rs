@@ -9,13 +9,19 @@ use super::{
     user_memory::{self, TEST_CODE_ADDRESS, TEST_DATA_ADDRESS, UserMapError},
 };
 
-/// `svc #0` ; `b 1b`
+/// CurrentAddress (x8=8), then FinishActor (x8=7), then spin if we ever return.
 ///
-///   0: d4000001  svc #0
-///   4: 17ffffff  b 0b
+///   0: d2800108  movz x8, #8
+///   4: d4000001  svc  #0
+///   8: d28000e8  movz x8, #7
+///   c: d4000001  svc  #0
+///  10: 14000000  b    .
 pub const EL0_SVC_LOOP: &[u8] = &[
-    0x01, 0x00, 0x00, 0xd4, // svc #0
-    0xff, 0xff, 0xff, 0x17, // b 0b
+    0x08, 0x01, 0x80, 0xd2, // movz x8, #8
+    0x01, 0x00, 0x00, 0xd4, // svc  #0
+    0xe8, 0x00, 0x80, 0xd2, // movz x8, #7
+    0x01, 0x00, 0x00, 0xd4, // svc  #0
+    0x00, 0x00, 0x00, 0x14, // b    .
 ];
 
 /// Builds an address space with the private page, one executable code page, and one stack page.
