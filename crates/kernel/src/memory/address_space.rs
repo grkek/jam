@@ -155,4 +155,23 @@ impl AddressSpace {
             entry,
         )
     }
+
+    /// Reads the last-level entry that maps `virtual_address`, or `None` when nothing is mapped.
+    #[must_use]
+    pub fn lookup_page(&self, virtual_address: usize) -> Option<PageTableEntry> {
+        if !is_canonical(virtual_address) {
+            return None;
+        }
+        let mut table = self.root_table;
+        for shift in [LEVEL_ONE_SHIFT, LEVEL_TWO_SHIFT] {
+            let entry = table.read(table_index(virtual_address, shift))?;
+            if !entry.is_valid() || !entry.is_table_or_page() {
+                return None;
+            }
+            table =
+                TableFrame::from_physical_address(usize::try_from(entry.output_address()).ok()?);
+        }
+        let entry = table.read(table_index(virtual_address, LEVEL_THREE_SHIFT))?;
+        entry.is_valid().then_some(entry)
+    }
 }

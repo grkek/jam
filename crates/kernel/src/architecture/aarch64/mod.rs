@@ -1,6 +1,7 @@
 //! `AArch64`: the only home of assembly and system register access.
 
 pub mod boot_entry;
+pub mod cache_maintenance;
 pub mod early_console;
 pub mod exceptions;
 pub mod generic_timer;
