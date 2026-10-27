@@ -18,10 +18,12 @@ use crate::{
     },
     error, information,
     memory::{
-        frame_allocator::{initialise_frame_allocator, install_frame_allocator, with_frame_allocator},
+        frame_allocator::{
+            initialise_frame_allocator, install_frame_allocator, with_frame_allocator,
+        },
         kernel_image::{kernel_image_end_address, kernel_image_start_address},
         kernel_map::enable_kernel_address_space,
-        private_page::{read_private_value, write_private_value, PRIVATE_VALUE_STRIDE},
+        private_page::{PRIVATE_VALUE_STRIDE, read_private_value, write_private_value},
     },
     scheduling::{
         core_local::{current_core_index, register_current_core},
@@ -259,14 +261,16 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
     install_frame_allocator(frame_allocator);
 
     // User-mapping self-test (uses the global allocator)
-    match with_frame_allocator(|frame_allocator| crate::memory::user_memory::run_user_mapping_self_test(frame_allocator)) {
+    match with_frame_allocator(|frame_allocator| {
+        crate::memory::user_memory::run_user_mapping_self_test(frame_allocator)
+    }) {
         Some(Ok(())) => information!(EarlyConsole, boot_ticks, "User-mapping self-test passed"),
         Some(Err(reason)) => {
             error!(
                 EarlyConsole,
                 boot_ticks, "User-mapping self-test failed: {reason}"
             );
-            
+
             power_interface::system_off(PowerStateCoordinationInterfaceConduit::SecureMonitorCall);
         }
         None => error!(
