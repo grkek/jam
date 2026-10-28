@@ -1,6 +1,6 @@
 //! Everything the kernel knows about one actor.
 
-use foundation::{address::LocalAddress, configuration::Configuration};
+use foundation::{address::LocalAddress, cause::Cause, configuration::Configuration};
 
 use crate::memory::address_space::AddressSpace;
 
@@ -13,6 +13,12 @@ pub enum ActorState {
     Runnable,
     /// The actor is running on a core.
     Running,
+    /// The actor waits for something, such as a message, and is in no run queue.
+    // Used by `AwaitInbox`, which comes with messaging.
+    #[allow(dead_code)]
+    Waiting,
+    /// The actor has ended and the kernel is taking back what it owned. The slot is not yet free.
+    Exiting,
 }
 
 /// One slot of the actor table.
@@ -33,17 +39,20 @@ pub struct ControlBlock {
     pub address_space: Option<AddressSpace>,
     /// Tags the actor's cached translations, so switching actors needs no TLB flush.
     pub address_space_identifier: u16,
+    /// Why the actor ended. Set when it starts exiting, cleared when the slot is reused.
+    pub exit_cause: Option<Cause>,
 }
 
 impl ControlBlock {
     /// A free slot.
     pub const EMPTY: Self = Self {
         state: ActorState::Free,
-        generation_counter: 1,
+        generation_counter: 0,
         parent_address: None,
         configuration: None,
         saved_frame_address: 0,
         address_space: None,
         address_space_identifier: 0,
+        exit_cause: None,
     };
 }

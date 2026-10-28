@@ -1,8 +1,16 @@
 //! The firmware's Power State Coordination Interface (`PSCI`): starting cores.
 
+use core::sync::atomic::{AtomicU8, Ordering};
+
 use foundation::device_tree::PowerStateCoordinationInterfaceConduit;
 
 const POWER_STATE_COORDINATION_INTERFACE_CPU_ON_64: u64 = 0xc400_0003;
+const POWER_STATE_COORDINATION_INTERFACE_SYSTEM_OFF: u64 = 0x8400_0008;
+
+const CONDUIT_UNKNOWN: u8 = 0;
+const CONDUIT_HYPERVISOR_CALL: u8 = 1;
+const CONDUIT_SECURE_MONITOR_CALL: u8 = 2;
+static KNOWN_CONDUIT: AtomicU8 = AtomicU8::new(CONDUIT_UNKNOWN);
 
 unsafe extern "C" {
     /// The physical address of `secondary_entry`, stored as data by `boot_entry.s`.
@@ -92,27 +100,49 @@ fn call_firmware(
     i64::from_ne_bytes(return_value.to_ne_bytes())
 }
 
-use core::arch::asm;
+/// Asks the firmware to power the machine off.
+pub fn system_off(conduit: PowerStateCoordinationInterfaceConduit) -> ! {
+    let _ = super::processor::mask_interrupts();
+    let _ = call_firmware(
+        conduit,
+        POWER_STATE_COORDINATION_INTERFACE_SYSTEM_OFF,
+        0,
+        0,
+        0,
+    );
+    // The firmware did not power us off. Stay stopped.
+    loop {
+        super::processor::wait_for_event();
+    }
+}
 
-use crate::memory::address_translation::KERNEL_VIRTUAL_OFFSET;
+/// Remembers how to reach the firmware, so code with no device tree in hand, such as the fault
+/// handler, can still power the machine off.
+pub fn record_conduit(conduit: Option<PowerStateCoordinationInterfaceConduit>) {
+    let encoded = match conduit {
+        Some(PowerStateCoordinationInterfaceConduit::HypervisorCall) => CONDUIT_HYPERVISOR_CALL,
+        Some(PowerStateCoordinationInterfaceConduit::SecureMonitorCall) => {
+            CONDUIT_SECURE_MONITOR_CALL
+        }
+        None => CONDUIT_UNKNOWN,
+    };
+    KNOWN_CONDUIT.store(encoded, Ordering::Release);
+}
 
-/// Shuts down the`AArch64` processing execution state and kills the host QEMU process.
-pub fn system_off(_conduit: foundation::device_tree::PowerStateCoordinationInterfaceConduit) -> ! {
-    unsafe {
-        // This stops the CPU architecture from processing any background ticks or throwing exceptions.
-        asm!("msr daifset, #15", options(nostack));
-
-        // 2. Write the absolute magic power-down command to QEMU's virtual board test device register.
-        // Base peripheral space: 0x0900_0000 + structural kernel virtual memory offset.
-        let qemu_syscon_power_reg = (KERNEL_VIRTUAL_OFFSET + 0x0900_0000) as *mut u32;
-
-        // Magic value 0x5555 forces QEMU to instantly terminate its process execution.
-        core::ptr::write_volatile(qemu_syscon_power_reg, 0x5555);
-
-        // 3. If QEMU's power register fails to clear, spin execution down
-        // to a complete halt so the instruction pipeline remains dead.
-        loop {
-            asm!("wfe", options(nostack));
+/// Powers the machine off through the recorded conduit, or parks the core when none is known.
+pub fn halt_machine() -> ! {
+    match KNOWN_CONDUIT.load(Ordering::Acquire) {
+        CONDUIT_HYPERVISOR_CALL => {
+            system_off(PowerStateCoordinationInterfaceConduit::HypervisorCall)
+        }
+        CONDUIT_SECURE_MONITOR_CALL => {
+            system_off(PowerStateCoordinationInterfaceConduit::SecureMonitorCall)
+        }
+        _ => {
+            let _ = super::processor::mask_interrupts();
+            loop {
+                super::processor::wait_for_event();
+            }
         }
     }
 }

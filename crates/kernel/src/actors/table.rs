@@ -63,6 +63,7 @@ pub fn spawn_kernel_actor(
         invalidate_address_space_identifier(address_space_identifier);
 
         control_block.state = ActorState::Runnable;
+        control_block.exit_cause = None;
         control_block.parent_address = parent_address;
         control_block.configuration = Some(configuration);
         control_block.saved_frame_address = frame_address;
@@ -78,12 +79,13 @@ pub fn spawn_kernel_actor(
     Err(SpawnError::TableFull)
 }
 
-/// Starts an actor that runs at EL0, beginning at the embedded `svc` loop.
+/// Starts an actor that runs `program` at EL0, in its own address space.
 ///
 /// # Errors
 ///
 /// Fails when the table is full or memory runs out.
 pub fn spawn_user_actor(
+    program: &'static [u8],
     parent_address: Option<LocalAddress>,
     configuration: Configuration,
 ) -> Result<LocalAddress, SpawnError> {
@@ -101,7 +103,11 @@ pub fn spawn_user_actor(
             u16::try_from(slot_index + 1).map_err(|_| SpawnError::TableFull)?;
 
         let address_space = with_frame_allocator(|frame_allocator| {
-            build_user_address_space(frame_allocator, slot_index as u64 * PRIVATE_VALUE_STRIDE)
+            build_user_address_space(
+                frame_allocator,
+                slot_index as u64 * PRIVATE_VALUE_STRIDE,
+                program,
+            )
         })
         .transpose()
         .map_err(|_| SpawnError::OutOfMemory)?
@@ -110,6 +116,7 @@ pub fn spawn_user_actor(
         invalidate_address_space_identifier(address_space_identifier);
 
         control_block.state = ActorState::Runnable;
+        control_block.exit_cause = None;
         control_block.parent_address = parent_address;
         control_block.configuration = Some(configuration);
         control_block.saved_frame_address = frame_address;

@@ -23,6 +23,7 @@ use crate::{
         kernel_image::{kernel_image_end_address, kernel_image_start_address},
         kernel_map::enable_kernel_address_space,
         user_memory::run_user_mapping_self_test,
+        user_program::{EL0_FAULT_PROGRAM, EL0_SVC_LOOP},
     },
     scheduling::{
         core_local::register_current_core, idle::install_idle_frames,
@@ -123,6 +124,45 @@ fn run_frame_allocator_self_test(boot_ticks: u64, frame_allocator: &mut FrameAll
     }
 }
 
+/// Spawns an EL0 actor that touches kernel memory, and checks that only that actor ends.
+fn run_fault_isolation_test(boot_ticks: u64) {
+    let Some(free_before) = free_frame_count() else {
+        error!(
+            EarlyConsole,
+            boot_ticks, "Fault isolation test skipped: frame allocator not installed"
+        );
+        return;
+    };
+
+    match spawn_user_actor(EL0_FAULT_PROGRAM, None, Configuration::default()) {
+        Ok(address) => information!(
+            EarlyConsole,
+            boot_ticks,
+            "Spawned misbehaving EL0 actor {address}"
+        ),
+        Err(error) => {
+            error!(
+                EarlyConsole,
+                boot_ticks, "Could not spawn misbehaving EL0 actor: {error:?}"
+            );
+            return;
+        }
+    }
+
+    match wait_for_free_frames(free_before) {
+        Ok((attempt, free_count)) => information!(
+            EarlyConsole,
+            boot_ticks,
+            "Fault isolation passed on attempt {attempt}: the actor ended, its memory came back ({free_count} frames free), and the machine kept running"
+        ),
+        Err(free_count) => warning!(
+            EarlyConsole,
+            boot_ticks,
+            "Fault isolation not confirmed: free frames before {free_before}, after {free_count}"
+        ),
+    }
+}
+
 /// Spawns an EL0 actor, waits for it to finish, and checks that its slot comes back reusable.
 fn run_actor_lifecycle_test(boot_ticks: u64) {
     let Some(free_before) = free_frame_count() else {
@@ -133,7 +173,7 @@ fn run_actor_lifecycle_test(boot_ticks: u64) {
         return;
     };
 
-    let first_address = match spawn_user_actor(None, Configuration::default()) {
+    let first_address = match spawn_user_actor(EL0_SVC_LOOP, None, Configuration::default()) {
         Ok(address) => {
             information!(
                 EarlyConsole,
@@ -176,7 +216,8 @@ fn run_actor_lifecycle_test(boot_ticks: u64) {
         first_address.slot_index(),
         first_address.generation_counter() + 1,
     );
-    match spawn_user_actor(None, Configuration::default()) {
+
+    match spawn_user_actor(EL0_SVC_LOOP, None, Configuration::default()) {
         Ok(address) if reclaimed && address == expected_address => information!(
             EarlyConsole,
             boot_ticks,
@@ -250,6 +291,8 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
     };
     let summary = device_tree.summary;
     let conduit = summary.power_state_coordination_interface_conduit;
+
+    power_interface::record_conduit(conduit);
 
     information!(
         EarlyConsole,
@@ -355,6 +398,7 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     start_current_core_tick();
 
+    run_fault_isolation_test(boot_ticks);
     run_actor_lifecycle_test(boot_ticks);
 
     information!(EarlyConsole, boot_ticks, "Done.");

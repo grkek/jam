@@ -5,10 +5,10 @@
 
 use core::fmt::Write;
 
-use foundation::device_tree::PowerStateCoordinationInterfaceConduit;
+use foundation::cause::Cause;
 
 use super::{early_console::EarlyConsole, interrupts::handle_interrupt};
-use crate::{architecture::aarch64::power_interface, system_calls::dispatcher};
+use crate::{actors::lifecycle, architecture::aarch64::power_interface, system_calls::dispatcher};
 
 core::arch::global_asm!(include_str!("exception_vectors.s"));
 
@@ -128,7 +128,28 @@ pub extern "C" fn exception_handler(trap_frame: *mut TrapFrame) -> *mut TrapFram
         return dispatcher::dispatch(trap_frame);
     }
 
+    // Any other synchronous exception from EL0 is that actor's own fault. End the actor, not the machine.
+    if frame.vector_index == LOWER_AARCH64_SYNCHRONOUS_VECTOR_INDEX {
+        return end_faulting_actor(frame, exception_class);
+    }
+
     report_fault_and_halt(frame)
+}
+
+/// Reports a fault taken at EL0 and ends the actor that caused it.
+fn end_faulting_actor(frame: &TrapFrame, exception_class: u64) -> *mut TrapFrame {
+    let _ = writeln!(
+        EarlyConsole,
+        "Actor fault: {} (ESR_EL1 {:#x}, FAR_EL1 {:#x}, ELR_EL1 {:#x})",
+        exception_class_name(exception_class),
+        frame.exception_syndrome_register,
+        frame.fault_address_register,
+        frame.exception_link_register
+    );
+    match lifecycle::end_current_actor(Cause::Faulted) {
+        Some(next_frame) => next_frame as *mut TrapFrame,
+        None => report_fault_and_halt(frame),
+    }
 }
 
 /// Reports the exception on the console and halts.
@@ -183,5 +204,6 @@ fn report_fault_and_halt(trap_frame: &TrapFrame) -> ! {
         }
         let _ = writeln!(console);
     }
-    power_interface::system_off(PowerStateCoordinationInterfaceConduit::SecureMonitorCall)
+
+    power_interface::halt_machine()
 }
