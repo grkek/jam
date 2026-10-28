@@ -9,12 +9,12 @@ members = [
     "services/observatory",
     "services/distribution",
     "services/drivers/pl011_console",
-    "services/drivers/virtio_network",
-    "tools/xtask",
+    "services/drivers/virtio_network"
 ]
-# Plain `cargo test` / `cargo check` on the host only touches host-buildable crates.
-# Everything else is built for `AArch64` through `cargo xtask`.
-default-members = ["crates/foundation", "tools/xtask"]
+exclude = [
+    "tools/xtask"
+]
+default-members = ["crates/foundation"]
 
 [workspace.package]
 version = "0.1.0"

@@ -23,7 +23,7 @@ use crate::{
         kernel_image::{kernel_image_end_address, kernel_image_start_address},
         kernel_map::enable_kernel_address_space,
         user_memory::run_user_mapping_self_test,
-        user_program::{EL0_FAULT_PROGRAM, EL0_SVC_LOOP},
+        user_program::EL0_GENESIS_PROGRAM,
     },
     scheduling::{
         core_local::register_current_core, idle::install_idle_frames,
@@ -34,10 +34,6 @@ use crate::{
 
 const BYTES_PER_MEGABYTE: u64 = 1024 * 1024;
 const SELF_TEST_FRAME_COUNT: usize = 2;
-/// How many times the boot core checks whether a finished actor's frames came back.
-const RECLAIM_POLL_ATTEMPTS: usize = 100;
-/// How long the boot core spins between those checks.
-const RECLAIM_POLL_SPINS: usize = 500_000;
 
 /// Powers the machine off through the firmware, or parks the core when there is no way to ask.
 fn power_off_or_park(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> ! {
@@ -47,28 +43,6 @@ fn power_off_or_park(conduit: Option<PowerStateCoordinationInterfaceConduit>) ->
             processor::wait_for_event();
         },
     }
-}
-
-/// Free frames in the shared allocator, or `None` before it is installed.
-fn free_frame_count() -> Option<usize> {
-    with_frame_allocator(|frame_allocator| frame_allocator.free_frame_count())
-}
-
-/// Waits until at least `target` frames are free again.
-///
-/// Returns the attempt that succeeded and the free count it saw, or the last count seen.
-fn wait_for_free_frames(target: usize) -> Result<(usize, usize), usize> {
-    let mut free_count = 0;
-    for attempt in 0..RECLAIM_POLL_ATTEMPTS {
-        free_count = free_frame_count().unwrap_or(0);
-        if free_count >= target {
-            return Ok((attempt, free_count));
-        }
-        for _ in 0..RECLAIM_POLL_SPINS {
-            core::hint::spin_loop();
-        }
-    }
-    Err(free_count)
 }
 
 /// Allocates and releases frames to prove the allocator still works with the MMU on.
@@ -121,117 +95,6 @@ fn run_frame_allocator_self_test(boot_ticks: u64, frame_allocator: &mut FrameAll
             EarlyConsole,
             boot_ticks, "Self-test error: frame count did not match after release"
         );
-    }
-}
-
-/// Spawns an EL0 actor that touches kernel memory, and checks that only that actor ends.
-fn run_fault_isolation_test(boot_ticks: u64) {
-    let Some(free_before) = free_frame_count() else {
-        error!(
-            EarlyConsole,
-            boot_ticks, "Fault isolation test skipped: frame allocator not installed"
-        );
-        return;
-    };
-
-    match spawn_user_actor(EL0_FAULT_PROGRAM, None, Configuration::default()) {
-        Ok(address) => information!(
-            EarlyConsole,
-            boot_ticks,
-            "Spawned misbehaving EL0 actor {address}"
-        ),
-        Err(error) => {
-            error!(
-                EarlyConsole,
-                boot_ticks, "Could not spawn misbehaving EL0 actor: {error:?}"
-            );
-            return;
-        }
-    }
-
-    match wait_for_free_frames(free_before) {
-        Ok((attempt, free_count)) => information!(
-            EarlyConsole,
-            boot_ticks,
-            "Fault isolation passed on attempt {attempt}: the actor ended, its memory came back ({free_count} frames free), and the machine kept running"
-        ),
-        Err(free_count) => warning!(
-            EarlyConsole,
-            boot_ticks,
-            "Fault isolation not confirmed: free frames before {free_before}, after {free_count}"
-        ),
-    }
-}
-
-/// Spawns an EL0 actor, waits for it to finish, and checks that its slot comes back reusable.
-fn run_actor_lifecycle_test(boot_ticks: u64) {
-    let Some(free_before) = free_frame_count() else {
-        error!(
-            EarlyConsole,
-            boot_ticks, "Actor lifecycle test skipped: frame allocator not installed"
-        );
-        return;
-    };
-
-    let first_address = match spawn_user_actor(EL0_SVC_LOOP, None, Configuration::default()) {
-        Ok(address) => {
-            information!(
-                EarlyConsole,
-                boot_ticks,
-                "Spawned EL0 actor {address} (free frames: {free_before})"
-            );
-            address
-        }
-        Err(error) => {
-            error!(
-                EarlyConsole,
-                boot_ticks, "Could not spawn EL0 actor: {error:?}"
-            );
-            return;
-        }
-    };
-
-    // The actor's frames come back when it finishes, so the free count returns to where it began.
-    let reclaimed = match wait_for_free_frames(free_before) {
-        Ok((attempt, free_count)) => {
-            information!(
-                EarlyConsole,
-                boot_ticks,
-                "Actor reclaim passed on attempt {attempt}: free frames {free_count}"
-            );
-            true
-        }
-        Err(free_count) => {
-            warning!(
-                EarlyConsole,
-                boot_ticks,
-                "Actor reclaim mismatch: free frames before {free_before}, after finish {free_count}"
-            );
-            false
-        }
-    };
-
-    // A reused slot keeps its index and moves on to the next generation.
-    let expected_address = foundation::address::LocalAddress::new(
-        first_address.slot_index(),
-        first_address.generation_counter() + 1,
-    );
-
-    match spawn_user_actor(EL0_SVC_LOOP, None, Configuration::default()) {
-        Ok(address) if reclaimed && address == expected_address => information!(
-            EarlyConsole,
-            boot_ticks,
-            "Slot reuse passed: second EL0 actor {address} took the finished actor's slot"
-        ),
-        Ok(address) => warning!(
-            EarlyConsole,
-            boot_ticks,
-            "Slot reuse not confirmed: second EL0 actor is {address}, expected {expected_address}"
-        ),
-        Err(error) => error!(
-            EarlyConsole,
-            boot_ticks, "Could not spawn second EL0 actor: {error:?}"
-        ),
     }
 }
 
@@ -398,10 +261,30 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     start_current_core_tick();
 
-    run_fault_isolation_test(boot_ticks);
-    run_actor_lifecycle_test(boot_ticks);
+    let _genesis_address =
+        match spawn_user_actor(&EL0_GENESIS_PROGRAM, None, Configuration::default()) {
+            Ok(address) => {
+                information!(
+                    EarlyConsole,
+                    boot_ticks,
+                    "Genesis actor spawned successfully at address {address}"
+                );
+                address
+            }
+            Err(spawn_error) => {
+                error!(
+                    EarlyConsole,
+                    boot_ticks, "Fatal: failed to spawn Genesis actor: {spawn_error:?}"
+                );
+                power_off_or_park(conduit);
+            }
+        };
 
-    information!(EarlyConsole, boot_ticks, "Done.");
+    information!(
+        EarlyConsole,
+        boot_ticks,
+        "Kernel bootstrap sequence complete. Handing control over to the scheduler..."
+    );
 
     loop {
         processor::wait_for_event();

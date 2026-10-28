@@ -1,8 +1,12 @@
 [alias]
-xtask = "run --package xtask --"
+xtask = "run --manifest-path tools/xtask/Cargo.toml --"
 
 [target.aarch64-unknown-none-softfloat]
 rustflags = [
     "-C", "force-frame-pointers=yes",
     "-C", "relocation-model=static",
 ]
+
+[unstable]
+build-std = ["core", "alloc", "compiler_builtins"]
+build-std-features = ["compiler-builtins-mem"]

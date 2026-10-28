@@ -47,7 +47,7 @@ impl ControlBlock {
     /// A free slot.
     pub const EMPTY: Self = Self {
         state: ActorState::Free,
-        generation_counter: 0,
+        generation_counter: 1,
         parent_address: None,
         configuration: None,
         saved_frame_address: 0,

@@ -47,9 +47,11 @@ pub fn end_current_actor(cause: Cause) -> Option<usize> {
     // give its frames back.
     deactivate_lower_half();
     invalidate_address_space_identifier(address_space_identifier);
+
     if let Some(address_space) = address_space {
         let _ = with_frame_allocator(|frame_allocator| address_space.destroy(frame_allocator));
     }
+
     core_local.set_current_slot_index(NO_ACTOR);
 
     let _ = with_control_block(slot_index, |control_block| {

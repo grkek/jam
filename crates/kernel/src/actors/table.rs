@@ -9,14 +9,14 @@ use crate::{
         frame_allocator::with_frame_allocator,
         kernel_stack::{prepare_first_frame, prepare_first_user_frame},
         private_page::{PRIVATE_VALUE_STRIDE, build_address_space_with_private_page},
-        user_memory::TEST_CODE_ADDRESS,
-        user_program::{build_user_address_space, user_stack_top},
+        user_memory::UserMapError,
+        user_program::{build_elf_user_address_space, elf_user_stack_top},
     },
     scheduling::scheduler::enqueue_runnable,
     synchronization::spin_lock::SpinLock,
 };
 
-/// Most actors that can exist at once.
+/// Maximum number of actors that can exist simultaneously on this node.
 pub const ACTOR_MAXIMUM: usize = 64;
 
 static ACTOR_TABLE: [SpinLock<ControlBlock>; ACTOR_MAXIMUM] =
@@ -25,19 +25,22 @@ static ACTOR_TABLE: [SpinLock<ControlBlock>; ACTOR_MAXIMUM] =
 /// Why an actor could not be spawned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpawnError {
-    /// Every slot is taken.
+    /// Every actor-table slot is occupied.
     TableFull,
-    /// The slot has no kernel stack.
+    /// The actor's initial kernel stack frame could not be prepared.
     StackUnavailable,
-    /// No memory was left for the actor's address space.
+    /// The physical frame allocator is unavailable or has insufficient frames.
     OutOfMemory,
+    /// The ELF executable is invalid, unsupported, or has an invalid mapping.
+    InvalidExecutable,
 }
 
-/// Starts an actor that runs in kernel mode, beginning at `entry_point`, in its own address space.
+/// Starts an actor at `entry_point` in kernel mode, in its own address space.
 ///
 /// # Errors
 ///
-/// Fails when the table is full or memory runs out.
+/// Returns [`SpawnError`] when no actor-table slot, initial kernel stack,
+/// or address-space memory is available.
 pub fn spawn_kernel_actor(
     entry_point: extern "C" fn() -> !,
     parent_address: Option<LocalAddress>,
@@ -48,10 +51,12 @@ pub fn spawn_kernel_actor(
         if control_block.state != ActorState::Free {
             continue;
         }
+
         let frame_address = prepare_first_frame(slot_index, entry_point as usize)
             .ok_or(SpawnError::StackUnavailable)?;
         let address_space_identifier =
             u16::try_from(slot_index + 1).map_err(|_| SpawnError::TableFull)?;
+
         let address_space = with_frame_allocator(|frame_allocator| {
             build_address_space_with_private_page(
                 frame_allocator,
@@ -60,6 +65,7 @@ pub fn spawn_kernel_actor(
         })
         .flatten()
         .ok_or(SpawnError::OutOfMemory)?;
+
         invalidate_address_space_identifier(address_space_identifier);
 
         control_block.state = ActorState::Runnable;
@@ -76,14 +82,24 @@ pub fn spawn_kernel_actor(
         let slot_number = u32::try_from(slot_index).map_err(|_| SpawnError::TableFull)?;
         return Ok(LocalAddress::new(slot_number, generation_counter));
     }
+
     Err(SpawnError::TableFull)
 }
 
-/// Starts an actor that runs `program` at EL0, in its own address space.
+/// Starts an EL0 actor from a statically linked AArch64 ELF64 executable.
+///
+/// Maps the executable's loadable segments and user stack, then prepares the
+/// first user frame with the ELF entry point as `ELR_EL1` and the ELF stack top
+/// as the initial `SP_EL0`.
+///
+/// The `program` argument must contain the complete ELF image, not raw
+/// instruction bytes. Raw-code self-tests should use a separate spawn path.
 ///
 /// # Errors
 ///
-/// Fails when the table is full or memory runs out.
+/// Returns [`SpawnError::InvalidExecutable`] when the ELF is malformed or has
+/// an unsupported mapping, [`SpawnError::OutOfMemory`] when frame allocation
+/// fails, or the corresponding error when the table/stack is unavailable.
 pub fn spawn_user_actor(
     program: &'static [u8],
     parent_address: Option<LocalAddress>,
@@ -95,23 +111,28 @@ pub fn spawn_user_actor(
             continue;
         }
 
-        let frame_address =
-            prepare_first_user_frame(slot_index, TEST_CODE_ADDRESS, user_stack_top())
-                .ok_or(SpawnError::StackUnavailable)?;
-
         let address_space_identifier =
             u16::try_from(slot_index + 1).map_err(|_| SpawnError::TableFull)?;
 
-        let address_space = with_frame_allocator(|frame_allocator| {
-            build_user_address_space(
+        // The allocator closure returns Result<(AddressSpace, u64), UserMapError>.
+        // Keep the absence of the allocator separate from an ELF mapping error.
+        let (address_space, entry_point) = with_frame_allocator(|frame_allocator| {
+            build_elf_user_address_space(
                 frame_allocator,
                 slot_index as u64 * PRIVATE_VALUE_STRIDE,
                 program,
             )
         })
-        .transpose()
-        .map_err(|_| SpawnError::OutOfMemory)?
-        .ok_or(SpawnError::OutOfMemory)?;
+        .ok_or(SpawnError::OutOfMemory)?
+        .map_err(|error| match error {
+            UserMapError::OutOfFrames => SpawnError::OutOfMemory,
+            _ => SpawnError::InvalidExecutable,
+        })?;
+
+        let entry_point =
+            usize::try_from(entry_point).map_err(|_| SpawnError::InvalidExecutable)?;
+        let frame_address = prepare_first_user_frame(slot_index, entry_point, elf_user_stack_top())
+            .ok_or(SpawnError::StackUnavailable)?;
 
         invalidate_address_space_identifier(address_space_identifier);
 
@@ -129,10 +150,11 @@ pub fn spawn_user_actor(
         let slot_number = u32::try_from(slot_index).map_err(|_| SpawnError::TableFull)?;
         return Ok(LocalAddress::new(slot_number, generation_counter));
     }
+
     Err(SpawnError::TableFull)
 }
 
-/// Runs `operation` on the control block in `slot_index`, holding its lock.
+/// Runs `operation` on the control block at `slot_index`, holding its lock.
 pub fn with_control_block<Output>(
     slot_index: usize,
     operation: impl FnOnce(&mut ControlBlock) -> Output,

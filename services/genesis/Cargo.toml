@@ -10,5 +10,9 @@ publish.workspace = true
 foundation.workspace = true
 runtime.workspace = true
 
+[[bin]]
+name = "genesis"
+path = "src/main.rs" # Or "src/bin/genesis.rs" if your binary entry point is there
+
 [lints]
 workspace = true
