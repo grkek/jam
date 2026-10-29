@@ -3,6 +3,20 @@
 //! This is a boot aid, not a time service. The real time and logging pipelines belong to service actors.
 
 use core::arch::asm;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+static BOOT_TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// Record and collect all of the boot ticks.
+pub fn record_boot_ticks(ticks: u64) {
+    BOOT_TICKS.store(ticks, Ordering::Relaxed);
+}
+
+/// Boot ticks which have been recorded.
+#[must_use]
+pub fn boot_ticks() -> u64 {
+    BOOT_TICKS.load(Ordering::Relaxed)
+}
 
 /// Reads the architected timer frequency in ticks per second.
 #[must_use]
@@ -49,32 +63,39 @@ impl Timestamp {
     }
 }
 
-/// Early boot information logging macro.
+/// Shared implementation: one timestamped line, written with a single `write_fmt`.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! log_line {
+    ($console:expr, $($arg:tt)*) => {{
+        use ::core::fmt::Write as _;
+        let ts = $crate::architecture::aarch64::time::Timestamp::now(
+            $crate::architecture::aarch64::time::boot_ticks(),
+        );
+        let _ = ::core::writeln!(
+            $console,
+            "[{:04}.{:04}] {}",
+            ts.seconds,
+            ts.fractional,
+            ::core::format_args!($($arg)*)
+        );
+    }};
+}
+
+/// Information logging macro.
 #[macro_export]
 macro_rules! information {
-    ($console:expr, $boot_ticks:expr, $($arg:tt)*) => {{
-        let ts = $crate::architecture::aarch64::time::Timestamp::now($boot_ticks);
-        let _ = write!($console, "[{:04}.{:04}] ", ts.seconds, ts.fractional);
-        let _ = writeln!($console, $($arg)*);
-    }};
+    ($console:expr, $($arg:tt)*) => { $crate::log_line!($console, $($arg)*) };
 }
 
-/// Early boot warning logging macro.
+/// Warning logging macro.
 #[macro_export]
 macro_rules! warning {
-    ($console:expr, $boot_ticks:expr, $($arg:tt)*) => {{
-        let ts = $crate::architecture::aarch64::time::Timestamp::now($boot_ticks);
-        let _ = write!($console, "[{:04}.{:04}] ", ts.seconds, ts.fractional);
-        let _ = writeln!($console, $($arg)*);
-    }};
+    ($console:expr, $($arg:tt)*) => { $crate::log_line!($console, $($arg)*) };
 }
 
-/// Early boot error logging macro.
+/// Error logging macro.
 #[macro_export]
 macro_rules! error {
-    ($console:expr, $boot_ticks:expr, $($arg:tt)*) => {{
-        let ts = $crate::architecture::aarch64::time::Timestamp::now($boot_ticks);
-        let _ = write!($console, "[{:04}.{:04}] ", ts.seconds, ts.fractional);
-        let _ = writeln!($console, $($arg)*);
-    }};
+    ($console:expr, $($arg:tt)*) => { $crate::log_line!($console, $($arg)*) };
 }

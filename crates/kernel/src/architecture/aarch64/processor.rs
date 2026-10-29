@@ -71,6 +71,18 @@ pub fn enable_interrupts() {
     }
 }
 
+#[must_use]
+/// Enabled interrupts on this core.
+pub fn interrupts_enabled() -> bool {
+    let daif: u64;
+
+    // SAFETY: Reading `DAIF` has no side effects.
+    unsafe {
+        core::arch::asm!("mrs {}, daif", out(reg) daif, options(nomem, nostack, preserves_flags))
+    };
+    daif & (1 << 7) == 0
+}
+
 /// Masks interrupts on this core and returns the previous mask state for `restore_interrupts`.
 #[must_use]
 pub fn mask_interrupts() -> u64 {

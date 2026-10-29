@@ -2,7 +2,10 @@
 
 use foundation::{address::LocalAddress, cause::Cause, configuration::Configuration};
 
-use crate::memory::address_space::AddressSpace;
+use crate::{
+    actors::{inbox::Inbox, message_pool::MessageHandle, message_storage::ACTOR_INBOX_CAPACITY},
+    memory::address_space::AddressSpace,
+};
 
 /// Where an actor is in its life.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,10 +44,19 @@ pub struct ControlBlock {
     pub address_space_identifier: u16,
     /// Why the actor ended. Set when it starts exiting, cleared when the slot is reused.
     pub exit_cause: Option<Cause>,
+    /// Inbox.
+    pub inbox: Option<Inbox<MessageHandle, LocalAddress, ACTOR_INBOX_CAPACITY>>,
+    /// True only while this incarnation owns one runnable queue entry.
+    ///
+    /// Protected by this control block's lock; work stealing moves the
+    /// encoded queue entry without changing this membership flag.
+    pub queued: bool,
+    /// Message-pool releases still in progress outside the actor lock.
+    pub pending_message_releases: usize,
 }
 
 impl ControlBlock {
-    /// A free slot.
+    /// A free actor-table slot with no allocated resources.
     pub const EMPTY: Self = Self {
         state: ActorState::Free,
         generation_counter: 1,
@@ -54,5 +66,8 @@ impl ControlBlock {
         address_space: None,
         address_space_identifier: 0,
         exit_cause: None,
+        inbox: None,
+        queued: false,
+        pending_message_releases: 0,
     };
 }

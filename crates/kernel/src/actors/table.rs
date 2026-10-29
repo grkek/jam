@@ -4,6 +4,7 @@ use foundation::{address::LocalAddress, configuration::Configuration};
 
 use super::control_block::{ActorState, ControlBlock};
 use crate::{
+    actors::{inbox::Inbox, message_storage::ACTOR_INBOX_BYTE_BUDGET},
     architecture::aarch64::memory_management_unit::invalidate_address_space_identifier,
     memory::{
         address_space::AddressSpace,
@@ -44,6 +45,9 @@ type UserImage = (AddressSpace, usize, usize);
 
 /// Starts an actor at `entry_point` in kernel mode, in its own address space.
 ///
+/// Initializes the actor's address space, execution context, and inbox
+/// before publishing it to the scheduler.
+///
 /// # Errors
 ///
 /// Returns [`SpawnError`] when no actor-table slot, initial kernel stack,
@@ -55,14 +59,23 @@ pub fn spawn_kernel_actor(
 ) -> Result<LocalAddress, SpawnError> {
     for (slot_index, slot) in ACTOR_TABLE.iter().enumerate() {
         let mut control_block = slot.lock();
+
         if control_block.state != ActorState::Free {
             continue;
         }
 
-        let frame_address = prepare_first_frame(slot_index, entry_point as usize)
-            .ok_or(SpawnError::StackUnavailable)?;
+        assert!(control_block.inbox.is_none() && control_block.address_space.is_none());
+        assert!(!control_block.queued && control_block.pending_message_releases == 0);
+
+        let slot_number = u32::try_from(slot_index).map_err(|_| SpawnError::TableFull)?;
+
         let address_space_identifier =
             u16::try_from(slot_index + 1).map_err(|_| SpawnError::TableFull)?;
+
+        let address = LocalAddress::new(slot_number, control_block.generation_counter);
+
+        let frame_address = prepare_first_frame(slot_index, entry_point as usize)
+            .ok_or(SpawnError::StackUnavailable)?;
 
         let address_space = with_frame_allocator(|frame_allocator| {
             build_address_space_with_private_page(
@@ -75,25 +88,40 @@ pub fn spawn_kernel_actor(
 
         invalidate_address_space_identifier(address_space_identifier);
 
-        control_block.state = ActorState::Runnable;
+        // Initialize the actor's resources before making it runnable.
+        control_block.inbox = Some(Inbox::new(address, ACTOR_INBOX_BYTE_BUDGET));
+
         control_block.exit_cause = None;
         control_block.parent_address = parent_address;
         control_block.configuration = Some(configuration);
         control_block.saved_frame_address = frame_address;
         control_block.address_space = Some(address_space);
         control_block.address_space_identifier = address_space_identifier;
-        let generation_counter = control_block.generation_counter;
+
+        // Publish the fully initialized actor.
+        control_block.state = ActorState::Runnable;
+
+        // Release the control-block lock before scheduling.
         drop(control_block);
 
-        enqueue_runnable(slot_index);
-        let slot_number = u32::try_from(slot_index).map_err(|_| SpawnError::TableFull)?;
-        return Ok(LocalAddress::new(slot_number, generation_counter));
+        assert!(enqueue_runnable(slot_index), "run queue rejected new actor");
+
+        return Ok(address);
     }
 
     Err(SpawnError::TableFull)
 }
 
-/// Finds a free slot, builds the actor's user image in it, and makes the actor runnable.
+/// Finds a free actor-table slot, constructs its user address space,
+/// initializes its inbox, and makes the actor runnable.
+///
+/// The actor is published to the scheduler only after all required
+/// resources have been successfully initialized.
+///
+/// # Errors
+///
+/// Returns [`SpawnError`] when no actor slot, kernel stack, or physical
+/// memory is available, or when the user image cannot be constructed.
 fn spawn_user(
     parent_address: Option<LocalAddress>,
     configuration: Configuration,
@@ -101,14 +129,20 @@ fn spawn_user(
 ) -> Result<LocalAddress, SpawnError> {
     for (slot_index, slot) in ACTOR_TABLE.iter().enumerate() {
         let mut control_block = slot.lock();
+
         if control_block.state != ActorState::Free {
             continue;
         }
 
+        let slot_number = u32::try_from(slot_index).map_err(|_| SpawnError::TableFull)?;
+
         let address_space_identifier =
             u16::try_from(slot_index + 1).map_err(|_| SpawnError::TableFull)?;
 
-        // Keep the absence of the allocator separate from an image error.
+        // Identify this exact incarnation of the actor-table slot.
+        let address = LocalAddress::new(slot_number, control_block.generation_counter);
+
+        // Keep allocator unavailability separate from image construction errors.
         let (address_space, entry_point, stack_top) = with_frame_allocator(|frame_allocator| {
             build_image(frame_allocator, slot_index as u64 * PRIVATE_VALUE_STRIDE)
         })
@@ -118,27 +152,42 @@ fn spawn_user(
             _ => SpawnError::InvalidExecutable,
         })?;
 
+        // Prepare the initial EL0 execution context.
         let Some(frame_address) = prepare_first_user_frame(slot_index, entry_point, stack_top)
         else {
             let _ = with_frame_allocator(|frame_allocator| address_space.destroy(frame_allocator));
+
             return Err(SpawnError::StackUnavailable);
         };
 
         invalidate_address_space_identifier(address_space_identifier);
 
-        control_block.state = ActorState::Runnable;
+        // Initialize the inbox before publishing the actor.
+        control_block.inbox = Some(Inbox::new(address, ACTOR_INBOX_BYTE_BUDGET));
+
+        // Initialize actor lifecycle and execution resources.
         control_block.exit_cause = None;
         control_block.parent_address = parent_address;
         control_block.configuration = Some(configuration);
         control_block.saved_frame_address = frame_address;
         control_block.address_space = Some(address_space);
         control_block.address_space_identifier = address_space_identifier;
-        let generation_counter = control_block.generation_counter;
+
+        assert_eq!(
+            unsafe { core::ptr::read_volatile((frame_address + 248) as *const u64) },
+            entry_point as u64,
+            "first frame wrong at spawn"
+        );
+
+        // Publish only after all initialization has completed.
+        control_block.state = ActorState::Runnable;
+
+        // Release the actor lock before interacting with the scheduler.
         drop(control_block);
 
         enqueue_runnable(slot_index);
-        let slot_number = u32::try_from(slot_index).map_err(|_| SpawnError::TableFull)?;
-        return Ok(LocalAddress::new(slot_number, generation_counter));
+
+        return Ok(address);
     }
 
     Err(SpawnError::TableFull)

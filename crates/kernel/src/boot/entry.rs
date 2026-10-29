@@ -1,18 +1,26 @@
 //! First Rust code executed on the boot core.
 
-use core::fmt::Write;
-
 use foundation::{
-    configuration::Configuration, device_tree::PowerStateCoordinationInterfaceConduit,
+    address::LocalAddress, configuration::Configuration,
+    device_tree::PowerStateCoordinationInterfaceConduit,
 };
 
 use super::{device_tree::load_device_tree, secondary_cores::start_secondary_cores};
 use crate::{
-    actors::table::spawn_user_actor,
+    actors::{
+        message_pool::MessagePool,
+        message_storage::{
+            ACTOR_INBOX_BYTE_BUDGET, ACTOR_INBOX_CAPACITY, MESSAGE_MAXIMUM_PAYLOAD_BYTES,
+            MESSAGE_POOL_CAPACITY,
+        },
+        table::spawn_user_actor,
+    },
     architecture::aarch64::{
-        early_console::EarlyConsole, exceptions::install_exception_vectors,
-        interrupt_controller::initialise_distributor, power_interface, processor,
-        time::read_counter_value,
+        early_console::EarlyConsole,
+        exceptions::install_exception_vectors,
+        interrupt_controller::initialise_distributor,
+        power_interface, processor,
+        time::{read_counter_value, record_boot_ticks},
     },
     error, information,
     memory::{
@@ -46,10 +54,9 @@ fn power_off_or_park(conduit: Option<PowerStateCoordinationInterfaceConduit>) ->
 }
 
 /// Allocates and releases frames to prove the allocator still works with the MMU on.
-fn run_frame_allocator_self_test(boot_ticks: u64, frame_allocator: &mut FrameAllocator) {
+fn run_frame_allocator_self_test(frame_allocator: &mut FrameAllocator) {
     information!(
         EarlyConsole,
-        boot_ticks,
         "Running self-test: verifying frame allocation and deallocation integrity..."
     );
 
@@ -60,14 +67,13 @@ fn run_frame_allocator_self_test(boot_ticks: u64, frame_allocator: &mut FrameAll
     let (Some(first_frame), Some(second_frame)) = (first_frame, second_frame) else {
         error!(
             EarlyConsole,
-            boot_ticks, "Self-test failed: unable to allocate test frames"
+            "Self-test failed: unable to allocate test frames"
         );
         return;
     };
 
     information!(
         EarlyConsole,
-        boot_ticks,
         "Self-test allocation passed: acquired frames at {first_frame:#x} and {second_frame:#x}"
     );
 
@@ -76,7 +82,6 @@ fn run_frame_allocator_self_test(boot_ticks: u64, frame_allocator: &mut FrameAll
     {
         warning!(
             EarlyConsole,
-            boot_ticks,
             "Self-test warning: frame count mismatch after allocation"
         );
     }
@@ -87,13 +92,12 @@ fn run_frame_allocator_self_test(boot_ticks: u64, frame_allocator: &mut FrameAll
     if frame_allocator.free_frame_count() == initial_free_count {
         information!(
             EarlyConsole,
-            boot_ticks,
             "Self-test deallocation passed: all test frames successfully returned to pool"
         );
     } else {
         error!(
             EarlyConsole,
-            boot_ticks, "Self-test error: frame count did not match after release"
+            "Self-test error: frame count did not match after release"
         );
     }
 }
@@ -105,10 +109,12 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     let boot_ticks = read_counter_value();
 
+    record_boot_ticks(boot_ticks);
+
     if !register_current_core(0) {
         error!(
             EarlyConsole,
-            boot_ticks, "Fatal: unable to register the current core: 0"
+            "Fatal: unable to register the current core: 0"
         );
 
         // The device tree has not been read, so the power interface is not known yet.
@@ -120,7 +126,6 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     information!(
         EarlyConsole,
-        boot_ticks,
         concat!(
             "JAM a.k.a Just Another Microkernel version ",
             env!("CARGO_PKG_VERSION"),
@@ -130,13 +135,11 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     information!(
         EarlyConsole,
-        boot_ticks,
         "Exception vector table installed successfully"
     );
 
     information!(
         EarlyConsole,
-        boot_ticks,
         "Kernel executing in the upper half, kernel_main at {:#x}",
         kernel_main as usize
     );
@@ -144,10 +147,7 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
     let device_tree = match load_device_tree(device_tree_address) {
         Ok(device_tree) => device_tree,
         Err(error) => {
-            error!(
-                EarlyConsole,
-                boot_ticks, "Fatal: device tree unusable: {error:?}"
-            );
+            error!(EarlyConsole, "Fatal: device tree unusable: {error:?}");
 
             power_off_or_park(None);
         }
@@ -159,7 +159,6 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     information!(
         EarlyConsole,
-        boot_ticks,
         "Device tree blob discovered at physical address {:#x}",
         device_tree.blob_address
     );
@@ -168,7 +167,6 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     information!(
         EarlyConsole,
-        boot_ticks,
         "Physical memory map: {:#x} to {:#x}, {} bytes ({} megabytes)",
         summary.memory_base_address,
         memory_end,
@@ -178,7 +176,6 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     information!(
         EarlyConsole,
-        boot_ticks,
         "Kernel image occupies {:#x} to {:#x}",
         kernel_image_start_address(),
         kernel_image_end_address()
@@ -186,7 +183,6 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     information!(
         EarlyConsole,
-        boot_ticks,
         "Multiprocessing: {} execution cores detected; power state coordination interface: {:?}",
         summary.central_processing_unit_count,
         conduit
@@ -195,7 +191,7 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
     let Some(mut frame_allocator) = initialise_frame_allocator(&summary) else {
         error!(
             EarlyConsole,
-            boot_ticks, "Fatal: physical frame allocator initialization failed"
+            "Fatal: physical frame allocator initialization failed"
         );
 
         power_off_or_park(conduit);
@@ -203,7 +199,6 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     information!(
         EarlyConsole,
-        boot_ticks,
         "Frame allocator initialized: {} of {} physical frames available",
         frame_allocator.free_frame_count(),
         frame_allocator.total_frame_count()
@@ -214,7 +209,7 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
         Err(error) => {
             error!(
                 EarlyConsole,
-                boot_ticks, "Fatal: kernel address space unusable: {error:?}"
+                "Fatal: kernel address space unusable: {error:?}"
             );
 
             power_off_or_park(conduit);
@@ -223,64 +218,69 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     information!(
         EarlyConsole,
-        boot_ticks,
         "Memory management unit enabled: translation tables at {:#x}, caches on, write-xor-execute enforced",
         kernel_address_space.root_table_address()
     );
 
-    run_frame_allocator_self_test(boot_ticks, &mut frame_allocator);
+    run_frame_allocator_self_test(&mut frame_allocator);
 
     // From here on the kernel allocates memory through the shared allocator.
     install_frame_allocator(frame_allocator);
 
     match with_frame_allocator(run_user_mapping_self_test) {
-        Some(Ok(())) => information!(EarlyConsole, boot_ticks, "User-mapping self-test passed"),
+        Some(Ok(())) => information!(EarlyConsole, "User-mapping self-test passed"),
         Some(Err(reason)) => {
-            error!(
-                EarlyConsole,
-                boot_ticks, "User-mapping self-test failed: {reason}"
-            );
+            error!(EarlyConsole, "User-mapping self-test failed: {reason}");
 
             power_off_or_park(conduit);
         }
         None => error!(
             EarlyConsole,
-            boot_ticks, "User-mapping self-test skipped: frame allocator not installed"
+            "User-mapping self-test skipped: frame allocator not installed"
         ),
     }
 
     initialise_distributor();
 
     // Secondary cores and the timer must be live before an actor can finish and land in idle.
-    start_secondary_cores(
-        &mut EarlyConsole,
-        boot_ticks,
-        &summary,
-        kernel_address_space.root_table_address(),
-    );
+    start_secondary_cores(&summary, kernel_address_space.root_table_address());
 
     start_current_core_tick();
 
-    match spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default()) {
-        Ok(address) => information!(
-            EarlyConsole,
-            boot_ticks,
-            "Genesis actor spawned successfully at address {address}"
-        ),
-        Err(spawn_error) => {
-            error!(
-                EarlyConsole,
-                boot_ticks, "Fatal: failed to spawn Genesis actor: {spawn_error:?}"
-            );
-            power_off_or_park(conduit);
-        }
-    }
+    let charge = MessagePool::<(), MESSAGE_POOL_CAPACITY, MESSAGE_MAXIMUM_PAYLOAD_BYTES, 0>::message_charge::<LocalAddress>().expect("charge").bytes();
+    assert!(
+        charge * ACTOR_INBOX_CAPACITY <= ACTOR_INBOX_BYTE_BUDGET,
+        "inbox budget too small: charge {charge} x {ACTOR_INBOX_CAPACITY} > {ACTOR_INBOX_BYTE_BUDGET}"
+    );
 
     information!(
         EarlyConsole,
-        boot_ticks,
         "Kernel bootstrap sequence complete. Handing control over to the scheduler..."
     );
+
+    loop {
+        match spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default()) {
+            Ok(address) if address.generation_counter() > 20_000 => {
+                information!(EarlyConsole, "Reused slot: {address}");
+                break;
+            }
+            _ => processor::wait_for_event(),
+        }
+    }
+
+    // match spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default()) {
+    //     Ok(address) => information!(
+    //         EarlyConsole,
+    //         "Genesis actor spawned successfully at address {address}"
+    //     ),
+    //     Err(spawn_error) => {
+    //         error!(
+    //             EarlyConsole,
+    //             "Fatal: failed to spawn Genesis actor: {spawn_error:?}"
+    //         );
+    //         power_off_or_park(conduit);
+    //     }
+    // }
 
     loop {
         processor::wait_for_event();

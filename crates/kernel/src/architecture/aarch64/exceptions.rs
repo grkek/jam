@@ -146,6 +146,20 @@ fn end_faulting_actor(frame: &TrapFrame, exception_class: u64) -> *mut TrapFrame
         frame.fault_address_register,
         frame.exception_link_register
     );
+
+    let core = crate::scheduling::core_local::current_core_local()
+        .map(|c| c.core_index())
+        .unwrap_or(usize::MAX);
+
+    let _ = writeln!(
+        EarlyConsole,
+        "Actor fault on core {core}: {} (ESR_EL1 {:#x}, FAR_EL1 {:#x}, ELR_EL1 {:#x})",
+        exception_class_name(exception_class),
+        frame.exception_syndrome_register,
+        frame.fault_address_register,
+        frame.exception_link_register
+    );
+
     match lifecycle::end_current_actor(Cause::Faulted) {
         Some(next_frame) => next_frame as *mut TrapFrame,
         None => report_fault_and_halt(frame),

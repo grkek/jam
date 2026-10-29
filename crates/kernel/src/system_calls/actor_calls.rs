@@ -35,11 +35,12 @@ pub fn current_address() -> (SystemCallStatus, u64) {
     (SystemCallStatus::Accepted, pack_local_address(address))
 }
 
-/// `FinishActor`: ends the calling actor, takes back its memory, and resumes whatever runs next.
+/// `FinishActor`: relinquishes the current actor and resumes the next or idle frame.
+///
+/// This operation must never return the terminating actor's original frame.
+/// A call with no currently scheduled actor indicates kernel state corruption.
 #[must_use]
-pub fn finish_actor(trap_frame: *mut TrapFrame) -> *mut TrapFrame {
-    match lifecycle::end_current_actor(Cause::Completed) {
-        Some(next_frame) => next_frame as *mut TrapFrame,
-        None => trap_frame,
-    }
+pub fn finish_actor(_trap_frame: *mut TrapFrame) -> *mut TrapFrame {
+    lifecycle::end_current_actor(Cause::Completed)
+        .expect("FinishActor invoked without a running actor") as *mut TrapFrame
 }
