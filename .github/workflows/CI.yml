@@ -46,7 +46,7 @@ jobs:
           timeout 5s cargo xtask run 2>&1 | tee qemu.log || true
           
           # Verify that the kernel actually reached the "Done." state
-          if grep -q "Done." qemu.log; then
+          if grep -q "Kernel bootstrap sequence complete." qemu.log; then
             echo "Kernel booted and passed self-tests successfully!"
             exit 0
           else
