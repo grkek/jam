@@ -34,7 +34,8 @@ use crate::{
         user_program::EL0_GENESIS_PROGRAM,
     },
     scheduling::{
-        core_local::register_current_core, idle::install_idle_frames,
+        core_local::register_current_core,
+        idle::{initialise_interrupt_stack_tracking, install_idle_frames},
         scheduler::start_current_core_tick,
     },
     warning,
@@ -199,7 +200,7 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     information!(
         EarlyConsole,
-        "Frame allocator initialized: {} of {} physical frames available",
+        "Frame allocator initialised: {} of {} physical frames available",
         frame_allocator.free_frame_count(),
         frame_allocator.total_frame_count()
     );
@@ -240,6 +241,8 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
         ),
     }
 
+    initialise_interrupt_stack_tracking();
+
     initialise_distributor();
 
     // Secondary cores and the timer must be live before an actor can finish and land in idle.
@@ -258,29 +261,19 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
         "Kernel bootstrap sequence complete. Handing control over to the scheduler..."
     );
 
-    loop {
-        match spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default()) {
-            Ok(address) if address.generation_counter() > 20_000 => {
-                information!(EarlyConsole, "Reused slot: {address}");
-                break;
-            }
-            _ => processor::wait_for_event(),
+    match spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default()) {
+        Ok(address) => information!(
+            EarlyConsole,
+            "Genesis actor spawned successfully at address {address}"
+        ),
+        Err(spawn_error) => {
+            error!(
+                EarlyConsole,
+                "Fatal: failed to spawn Genesis actor: {spawn_error:?}"
+            );
+            power_off_or_park(conduit);
         }
     }
-
-    // match spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default()) {
-    //     Ok(address) => information!(
-    //         EarlyConsole,
-    //         "Genesis actor spawned successfully at address {address}"
-    //     ),
-    //     Err(spawn_error) => {
-    //         error!(
-    //             EarlyConsole,
-    //             "Fatal: failed to spawn Genesis actor: {spawn_error:?}"
-    //         );
-    //         power_off_or_park(conduit);
-    //     }
-    // }
 
     loop {
         processor::wait_for_event();

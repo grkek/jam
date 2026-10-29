@@ -24,6 +24,7 @@ unsafe extern "C" {
 pub struct FrameAllocator {
     bitmap: FrameBitmap<'static>,
     memory_base_address: usize,
+    reserved_frame_count: usize,
 }
 
 fn align_up(address: usize, alignment: usize) -> usize {
@@ -71,6 +72,7 @@ pub fn initialise_frame_allocator(summary: &DeviceTreeSummary) -> Option<FrameAl
     Some(FrameAllocator {
         bitmap,
         memory_base_address,
+        reserved_frame_count,
     })
 }
 
@@ -78,6 +80,13 @@ impl FrameAllocator {
     /// Takes a free frame and returns its physical address.
     pub fn allocate_frame(&mut self) -> Option<usize> {
         let frame_index = self.bitmap.allocate()?;
+
+        assert!(
+            frame_index >= self.reserved_frame_count,
+            "BUG: allocator allocated reserved frame {}",
+            frame_index
+        );
+
         Some(self.memory_base_address + frame_index * FRAME_BYTE_COUNT)
     }
 
@@ -90,10 +99,19 @@ impl FrameAllocator {
         let offset = frame_address
             .checked_sub(self.memory_base_address)
             .ok_or(FrameFreeError::OutOfRange)?;
+
         if offset % FRAME_BYTE_COUNT != 0 {
             return Err(FrameFreeError::OutOfRange);
         }
-        self.bitmap.free(offset / FRAME_BYTE_COUNT)
+
+        let frame_index = offset / FRAME_BYTE_COUNT;
+
+        assert!(
+            frame_index >= self.reserved_frame_count,
+            "BUG: attempted to free reserved kernel frame {frame_address:#x}"
+        );
+
+        self.bitmap.free(frame_index)
     }
 
     /// Frames of RAM in total.

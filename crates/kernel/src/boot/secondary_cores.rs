@@ -66,13 +66,13 @@ pub fn start_secondary_cores(summary: &DeviceTreeSummary, translation_table_addr
     if online_core_count == summary.central_processing_unit_count {
         information!(
             EarlyConsole,
-            "Multiprocessing initialized: {online_core_count} of {} cores online",
+            "Multiprocessing initialised: {online_core_count} of {} cores online",
             summary.central_processing_unit_count
         );
     } else {
         warning!(
             EarlyConsole,
-            "Multiprocessing initialized partially: only {online_core_count} of {} cores online",
+            "Multiprocessing initialised partially: only {online_core_count} of {} cores online",
             summary.central_processing_unit_count
         );
     }

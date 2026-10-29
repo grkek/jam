@@ -129,7 +129,7 @@ impl<Reference, const MAX_PAYLOAD_BYTES: usize, const MAX_REFERENCES: usize>
 /// `Reference` must be a **kernel-retained capability**, not an arbitrary
 /// user-supplied numeric reference. `CAPACITY` and `MAX_PAYLOAD_BYTES` bound
 /// the memory footprint; `MAX_REFERENCES` bounds per-message attachments.
-/// Prefer a single statically initialized pool protected by JAM's `SpinLock`.
+/// Prefer a single statically initialised pool protected by JAM's `SpinLock`.
 ///
 /// Callers must not release a message while it is reserved by an in-flight
 /// receive. This lifetime is enforced by the actor inbox's receive leases.

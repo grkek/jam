@@ -18,6 +18,7 @@ use crate::{
         table::{ACTOR_MAXIMUM, with_control_block},
     },
     architecture::aarch64::{
+        exceptions::TrapFrame,
         generic_timer::{rearm_tick, start_tick},
         interrupt_controller::initialise_core_interface,
         memory_management_unit::{activate_lower_half, deactivate_lower_half},
@@ -211,22 +212,45 @@ fn dispatch_next(core_local: &CoreLocal) -> usize {
                 None => deactivate_lower_half(),
             }
             core_local.set_current_slot_index(slot_index);
+            validate_resume_frame(core_local, frame_address);
             frame_address
         }
         None => {
-            let idle = core_local.idle_frame_address();
-            // SAFETY: idle frame is a saved TrapFrame; ELR at +248.
-            let elr = unsafe { core::ptr::read_volatile((idle + 248) as *const u64) };
-            assert!(
-                elr != 0,
-                "core {} idle frame {:#x} has ELR 0",
-                core_local.core_index(),
-                idle
-            );
+            core_local.set_current_slot_index(NO_ACTOR);
+            deactivate_lower_half();
 
-            idle
+            validate_resume_frame(core_local, core_local.idle_frame_address())
         }
     }
+}
+
+fn validate_resume_frame(core_local: &CoreLocal, frame_address: usize) -> usize {
+    assert_ne!(frame_address, 0, "Scheduler selected a null frame");
+
+    assert_eq!(
+        frame_address % align_of::<TrapFrame>(),
+        0,
+        "Scheduler selected a misaligned frame"
+    );
+
+    // SAFETY: The scheduler must guarantee that the selected
+    // address points to a live, initialised TrapFrame.
+    let frame = unsafe { &*(frame_address as *const TrapFrame) };
+
+    assert_ne!(
+        frame.exception_link_register, 0,
+        "Scheduler selected a zero instruction pointer"
+    );
+
+    if core_local.current_slot_index() == NO_ACTOR {
+        assert_eq!(
+            frame.saved_program_status_register & 0xF,
+            0x5,
+            "Idle core is about to resume outside EL1h"
+        );
+    }
+
+    frame_address
 }
 
 /// Saves an interrupted execution context before publishing it for scheduling.
@@ -240,14 +264,9 @@ fn schedule(core_local: &CoreLocal, interrupted_frame_address: usize) -> usize {
         // SAFETY: interrupted_frame_address is the TrapFrame the vector just saved; SPSR is at +256.
         let spsr =
             unsafe { core::ptr::read_volatile((interrupted_frame_address + 256) as *const u64) };
-        assert!(
-            spsr & 0xf != 0,
-            "core {} idle frame {:#x} is EL0 (spsr {:#x})",
-            core_local.core_index(),
-            interrupted_frame_address,
-            spsr
-        );
-        core_local.set_idle_frame_address(interrupted_frame_address);
+        if spsr & 0xf == 0 {
+            crate::architecture::aarch64::power_interface::halt_machine();
+        }
     }
 
     if current_slot == NO_ACTOR {
@@ -276,6 +295,7 @@ fn schedule(core_local: &CoreLocal, interrupted_frame_address: usize) -> usize {
             actor.state = ActorState::Runnable;
             actor.queued = true;
             let inserted = queue.push_back(address);
+
             assert!(inserted, "checked run queue capacity under lock");
         });
         if queue_was_full {
@@ -303,6 +323,18 @@ pub fn on_timer_tick(interrupted_frame_address: usize) -> usize {
     let Some(core_local) = current_core_local() else {
         return interrupted_frame_address;
     };
+    let tick = core_local.increment_tick_count();
+
+    if tick % 100 == 0 {
+        let (used, capacity) =
+            crate::scheduling::idle::interrupt_stack_high_water_bytes(core_local.core_index());
+
+        assert!(
+            used < capacity - 4096,
+            "Interrupt stack critically close to overflowing"
+        );
+    }
+
     schedule(core_local, interrupted_frame_address)
 }
 

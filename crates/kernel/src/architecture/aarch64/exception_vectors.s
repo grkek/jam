@@ -78,7 +78,7 @@ exception_common:
 	// and another core can safely resume it once the frame is saved.
 	mrs	x1, tpidr_el1
 	add	x1, x1, #1
-	ldr	x2, =__interrupt_stack_size
+	ldr x2, =__interrupt_stack_stride
 	adrp	x3, __interrupt_stacks_bottom
 	add	x3, x3, :lo12:__interrupt_stacks_bottom
 	madd	x3, x1, x2, x3

@@ -24,16 +24,76 @@ use crate::{
     architecture::aarch64::{
         early_console::EarlyConsole,
         memory_management_unit::{deactivate_lower_half, invalidate_address_space_identifier},
-        processor::interrupts_enabled
+        processor::interrupts_enabled,
     },
-    information,
-    error,
+    error, information,
     memory::frame_allocator::with_frame_allocator,
     scheduling::{
-        core_local::{NO_ACTOR, core_locals, current_core_local},
+        core_local::{CORE_MAXIMUM, NO_ACTOR, core_locals, current_core_local},
         scheduler::pick_next_after_finish,
     },
 };
+
+unsafe extern "C" {
+    static __reclamation_stacks_bottom: u8;
+    static __reclamation_stacks_top: u8;
+}
+
+core::arch::global_asm!(
+    r#"
+    .text
+    .balign 4
+    .global jam_execute_on_reclamation_stack
+jam_execute_on_reclamation_stack:
+    stp x19, x30, [sp, #-16]!
+    mov x19, sp
+
+    mov sp, x0
+    mov x0, x2
+    blr x1
+
+    mov sp, x19
+    ldp x19, x30, [sp], #16
+    ret
+"#
+);
+
+unsafe extern "C" {
+    fn jam_execute_on_reclamation_stack(
+        stack_top: usize,
+        callback: extern "C" fn(usize),
+        argument: usize,
+    );
+}
+
+/// Reclaims an actor while executing on the dedicated stack.
+extern "C" fn reclaim_callback(argument: usize) {
+    // SAFETY: The caller keeps the LocalAddress alive until this returns.
+    let address = unsafe { (argument as *const LocalAddress).read() };
+
+    reclaim_exiting_actor(address);
+}
+
+/// Runs reclamation without consuming the interrupt stack.
+fn reclaim_on_dedicated_stack(address: LocalAddress, core_index: usize) {
+    assert!(core_index < CORE_MAXIMUM);
+    assert!(!interrupts_enabled());
+
+    let base = &raw const __reclamation_stacks_bottom as usize;
+    let end = &raw const __reclamation_stacks_top as usize;
+    let stride = (end - base) / CORE_MAXIMUM;
+    let stack_top = base + (core_index + 1) * stride;
+
+    // SAFETY: The stack is permanent, 16-byte aligned, and exclusively
+    // owned by this core while interrupts are masked.
+    unsafe {
+        jam_execute_on_reclamation_stack(
+            stack_top,
+            reclaim_callback,
+            &address as *const LocalAddress as usize,
+        );
+    }
+}
 
 /// Reclaims the finishing actor's messages and, if safe, its address space and slot.
 ///
@@ -135,8 +195,6 @@ fn reclaim_exiting_actor(address: LocalAddress) {
         actor.address_space_identifier = 0;
         actor.exit_cause = None;
         actor.state = ActorState::Free;
-
-        information!(EarlyConsole, "Actor {address} slot freed, next generation {next_generation}");
     });
 }
 
@@ -154,12 +212,18 @@ pub fn end_current_actor(cause: Cause) -> Option<usize> {
     let core_index = core_local.core_index();
     let slot_index = core_local.current_slot_index();
     if slot_index == NO_ACTOR {
-        error!(EarlyConsole, "end_current_actor: core {core_index} has no current slot");
+        error!(
+            EarlyConsole,
+            "end_current_actor: core {core_index} has no current slot"
+        );
         return None;
     }
 
     let Ok(slot_number) = u32::try_from(slot_index) else {
-        error!(EarlyConsole, "end_current_actor: core {core_index} slot {slot_index} does not fit u32");
+        error!(
+            EarlyConsole,
+            "end_current_actor: core {core_index} slot {slot_index} does not fit u32"
+        );
         return None;
     };
 
@@ -167,7 +231,10 @@ pub fn end_current_actor(cause: Cause) -> Option<usize> {
         (actor.state, actor.generation_counter, actor.queued)
     });
     let Some((state, generation, queued)) = snapshot else {
-        error!(EarlyConsole, "end_current_actor: core {core_index} invalid slot {slot_index}");
+        error!(
+            EarlyConsole,
+            "end_current_actor: core {core_index} invalid slot {slot_index}"
+        );
         return None;
     };
     if state != ActorState::Running {
@@ -195,13 +262,12 @@ pub fn end_current_actor(cause: Cause) -> Option<usize> {
         }
     });
 
-    information!(EarlyConsole, "Actor {address} ended on core {core_index}: {cause:?}");
+    information!(EarlyConsole, "Actor {address} ended");
 
     deactivate_lower_half();
     core_local.set_current_slot_index(NO_ACTOR);
 
-    reclaim_exiting_actor(address);
+    reclaim_on_dedicated_stack(address, core_index);
     let next = pick_next_after_finish(core_local);
-    information!(EarlyConsole, "core {core_index} after {address}: next frame {next:#x}");
     Some(next)
 }

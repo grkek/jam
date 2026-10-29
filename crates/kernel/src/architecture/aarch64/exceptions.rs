@@ -8,7 +8,13 @@ use core::fmt::Write;
 use foundation::cause::Cause;
 
 use super::{early_console::EarlyConsole, interrupts::handle_interrupt};
-use crate::{actors::lifecycle, architecture::aarch64::power_interface, system_calls::dispatcher};
+use crate::{
+    actors::lifecycle,
+    architecture::aarch64::power_interface,
+    error,
+    scheduling::core_local::{NO_ACTOR, current_core_local},
+    system_calls::dispatcher,
+};
 
 core::arch::global_asm!(include_str!("exception_vectors.s"));
 
@@ -106,9 +112,54 @@ fn exception_class_name(exception_class: u64) -> &'static str {
     }
 }
 
+fn checked_return(frame: *mut TrapFrame) -> *mut TrapFrame {
+    assert!(!frame.is_null(), "Null return frame");
+
+    let selected = unsafe { &*frame };
+    let core = crate::scheduling::core_local::current_core_local().expect("Missing core");
+
+    let slot = core.current_slot_index();
+
+    if selected.exception_link_register == 0
+        || (slot == crate::scheduling::core_local::NO_ACTOR
+            && (selected.saved_program_status_register & 0xf) != 5)
+    {
+        error!(
+            EarlyConsole,
+            "BAD RETURN: core={} slot={} frame={:p} PC={:#x} SPSR={:#x}",
+            core.core_index(),
+            slot,
+            frame,
+            selected.exception_link_register,
+            selected.saved_program_status_register,
+        );
+
+        power_interface::halt_machine();
+    }
+
+    frame
+}
+
 /// Called from `exception_vectors.s` on the core's interrupt stack. Returns the frame to resume.
 #[unsafe(no_mangle)]
 pub extern "C" fn exception_handler(trap_frame: *mut TrapFrame) -> *mut TrapFrame {
+    if let Some(core) = current_core_local() {
+        let slot = core.current_slot_index();
+        let idle_frame = core.idle_frame_address();
+
+        if slot != NO_ACTOR && trap_frame as usize == idle_frame {
+            error!(
+                EarlyConsole,
+                "FRAME COLLISION: core={} actor_slot={} frame={:#x}",
+                core.core_index(),
+                slot,
+                idle_frame,
+            );
+
+            power_interface::halt_machine();
+        }
+    }
+
     // SAFETY: The vector entry passes the frame it just saved on the interrupted stack.
     let frame = unsafe { &*trap_frame };
 
@@ -116,7 +167,7 @@ pub extern "C" fn exception_handler(trap_frame: *mut TrapFrame) -> *mut TrapFram
     if frame.vector_index == IRQ_CURRENT_LEVEL_SPX_VECTOR_INDEX
         || frame.vector_index == IRQ_LOWER_AARCH64_VECTOR_INDEX
     {
-        return handle_interrupt(trap_frame as usize) as *mut TrapFrame;
+        return checked_return(handle_interrupt(trap_frame as usize) as *mut TrapFrame);
     }
 
     let exception_class =
@@ -125,12 +176,12 @@ pub extern "C" fn exception_handler(trap_frame: *mut TrapFrame) -> *mut TrapFram
     if frame.vector_index == LOWER_AARCH64_SYNCHRONOUS_VECTOR_INDEX
         && exception_class == EXCEPTION_CLASS_SUPERVISOR_CALL
     {
-        return dispatcher::dispatch(trap_frame);
+        return checked_return(dispatcher::dispatch(trap_frame));
     }
 
     // Any other synchronous exception from EL0 is that actor's own fault. End the actor, not the machine.
     if frame.vector_index == LOWER_AARCH64_SYNCHRONOUS_VECTOR_INDEX {
-        return end_faulting_actor(frame, exception_class);
+        return checked_return(end_faulting_actor(frame, exception_class));
     }
 
     report_fault_and_halt(frame)

@@ -45,7 +45,7 @@ type UserImage = (AddressSpace, usize, usize);
 
 /// Starts an actor at `entry_point` in kernel mode, in its own address space.
 ///
-/// Initializes the actor's address space, execution context, and inbox
+/// initialises the actor's address space, execution context, and inbox
 /// before publishing it to the scheduler.
 ///
 /// # Errors
@@ -88,7 +88,7 @@ pub fn spawn_kernel_actor(
 
         invalidate_address_space_identifier(address_space_identifier);
 
-        // Initialize the actor's resources before making it runnable.
+        // initialise the actor's resources before making it runnable.
         control_block.inbox = Some(Inbox::new(address, ACTOR_INBOX_BYTE_BUDGET));
 
         control_block.exit_cause = None;
@@ -98,7 +98,7 @@ pub fn spawn_kernel_actor(
         control_block.address_space = Some(address_space);
         control_block.address_space_identifier = address_space_identifier;
 
-        // Publish the fully initialized actor.
+        // Publish the fully initialised actor.
         control_block.state = ActorState::Runnable;
 
         // Release the control-block lock before scheduling.
@@ -113,10 +113,10 @@ pub fn spawn_kernel_actor(
 }
 
 /// Finds a free actor-table slot, constructs its user address space,
-/// initializes its inbox, and makes the actor runnable.
+/// initialises its inbox, and makes the actor runnable.
 ///
 /// The actor is published to the scheduler only after all required
-/// resources have been successfully initialized.
+/// resources have been successfully initialised.
 ///
 /// # Errors
 ///
@@ -162,10 +162,10 @@ fn spawn_user(
 
         invalidate_address_space_identifier(address_space_identifier);
 
-        // Initialize the inbox before publishing the actor.
+        // initialise the inbox before publishing the actor.
         control_block.inbox = Some(Inbox::new(address, ACTOR_INBOX_BYTE_BUDGET));
 
-        // Initialize actor lifecycle and execution resources.
+        // initialise actor lifecycle and execution resources.
         control_block.exit_cause = None;
         control_block.parent_address = parent_address;
         control_block.configuration = Some(configuration);

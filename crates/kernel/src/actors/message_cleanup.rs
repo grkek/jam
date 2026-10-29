@@ -33,7 +33,7 @@ pub enum CleanupError {
     FreeActor,
     /// The actor has not entered its exiting state.
     NotExiting,
-    /// The actor has no initialized inbox.
+    /// The actor has no initialised inbox.
     MissingInbox,
     /// The inbox has not been closed against concurrent senders.
     InboxOpen,
@@ -273,7 +273,7 @@ pub fn reclaim_one_closed_message<
 ///
 /// # Errors
 ///
-/// Rejects invalid, stale, non-exiting, or uninitialized actor slots.
+/// Rejects invalid, stale, non-exiting, or uninitialised actor slots.
 pub fn message_cleanup_complete(actor_address: LocalAddress) -> Result<bool, CleanupError> {
     with_actor(actor_address, |control_block| {
         if control_block.state != ActorState::Exiting {
