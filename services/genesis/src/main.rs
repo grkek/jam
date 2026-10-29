@@ -14,10 +14,6 @@ fn on_panic(_panic_information: &PanicInfo) -> ! {
 /// Where the kernel's loader starts the actor.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-    unsafe {
-        core::arch::asm!("brk #0");
-    }
-
     park()
 }
 
