@@ -72,12 +72,16 @@ fn run_command(program: &OsString, arguments: &[&str]) -> Result<(), String> {
     }
 }
 
-fn build_kernel() -> Result<PathBuf, String> {
-    // Build the root genesis service binary first so it is available for the kernel embed.
+fn build_genesis() -> Result<(), String> {
     run_command(
         &cargo_program(),
         &["build", "--package", "genesis", "--target", KERNEL_TARGET],
-    )?;
+    )
+}
+
+fn build_kernel() -> Result<PathBuf, String> {
+    // Build the root genesis service binary first so it is available for the kernel embed.
+    let _ = build_genesis();
 
     // Build the kernel package targeting the same bare-metal architecture.
     run_command(

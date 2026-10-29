@@ -6,11 +6,15 @@ use super::control_block::{ActorState, ControlBlock};
 use crate::{
     architecture::aarch64::memory_management_unit::invalidate_address_space_identifier,
     memory::{
-        frame_allocator::with_frame_allocator,
+        address_space::AddressSpace,
+        frame_allocator::{FrameAllocator, with_frame_allocator},
         kernel_stack::{prepare_first_frame, prepare_first_user_frame},
         private_page::{PRIVATE_VALUE_STRIDE, build_address_space_with_private_page},
-        user_memory::UserMapError,
-        user_program::{build_elf_user_address_space, elf_user_stack_top},
+        user_memory::{TEST_CODE_ADDRESS, UserMapError},
+        user_program::{
+            build_elf_user_address_space, build_user_address_space, elf_user_stack_top,
+            user_stack_top,
+        },
     },
     scheduling::scheduler::enqueue_runnable,
     synchronization::spin_lock::SpinLock,
@@ -34,6 +38,9 @@ pub enum SpawnError {
     /// The ELF executable is invalid, unsupported, or has an invalid mapping.
     InvalidExecutable,
 }
+
+/// What a user actor needs to start: its address space, its entry point, and its stack top.
+type UserImage = (AddressSpace, usize, usize);
 
 /// Starts an actor at `entry_point` in kernel mode, in its own address space.
 ///
@@ -86,24 +93,11 @@ pub fn spawn_kernel_actor(
     Err(SpawnError::TableFull)
 }
 
-/// Starts an EL0 actor from a statically linked AArch64 ELF64 executable.
-///
-/// Maps the executable's loadable segments and user stack, then prepares the
-/// first user frame with the ELF entry point as `ELR_EL1` and the ELF stack top
-/// as the initial `SP_EL0`.
-///
-/// The `program` argument must contain the complete ELF image, not raw
-/// instruction bytes. Raw-code self-tests should use a separate spawn path.
-///
-/// # Errors
-///
-/// Returns [`SpawnError::InvalidExecutable`] when the ELF is malformed or has
-/// an unsupported mapping, [`SpawnError::OutOfMemory`] when frame allocation
-/// fails, or the corresponding error when the table/stack is unavailable.
-pub fn spawn_user_actor(
-    program: &'static [u8],
+/// Finds a free slot, builds the actor's user image in it, and makes the actor runnable.
+fn spawn_user(
     parent_address: Option<LocalAddress>,
     configuration: Configuration,
+    build_image: impl FnOnce(&mut FrameAllocator, u64) -> Result<UserImage, UserMapError>,
 ) -> Result<LocalAddress, SpawnError> {
     for (slot_index, slot) in ACTOR_TABLE.iter().enumerate() {
         let mut control_block = slot.lock();
@@ -114,14 +108,9 @@ pub fn spawn_user_actor(
         let address_space_identifier =
             u16::try_from(slot_index + 1).map_err(|_| SpawnError::TableFull)?;
 
-        // The allocator closure returns Result<(AddressSpace, u64), UserMapError>.
-        // Keep the absence of the allocator separate from an ELF mapping error.
-        let (address_space, entry_point) = with_frame_allocator(|frame_allocator| {
-            build_elf_user_address_space(
-                frame_allocator,
-                slot_index as u64 * PRIVATE_VALUE_STRIDE,
-                program,
-            )
+        // Keep the absence of the allocator separate from an image error.
+        let (address_space, entry_point, stack_top) = with_frame_allocator(|frame_allocator| {
+            build_image(frame_allocator, slot_index as u64 * PRIVATE_VALUE_STRIDE)
         })
         .ok_or(SpawnError::OutOfMemory)?
         .map_err(|error| match error {
@@ -129,10 +118,11 @@ pub fn spawn_user_actor(
             _ => SpawnError::InvalidExecutable,
         })?;
 
-        let entry_point =
-            usize::try_from(entry_point).map_err(|_| SpawnError::InvalidExecutable)?;
-        let frame_address = prepare_first_user_frame(slot_index, entry_point, elf_user_stack_top())
-            .ok_or(SpawnError::StackUnavailable)?;
+        let Some(frame_address) = prepare_first_user_frame(slot_index, entry_point, stack_top)
+        else {
+            let _ = with_frame_allocator(|frame_allocator| address_space.destroy(frame_allocator));
+            return Err(SpawnError::StackUnavailable);
+        };
 
         invalidate_address_space_identifier(address_space_identifier);
 
@@ -152,6 +142,46 @@ pub fn spawn_user_actor(
     }
 
     Err(SpawnError::TableFull)
+}
+
+/// Starts an EL0 actor from a statically linked AArch64 ELF64 executable.
+///
+/// Maps the executable's loadable segments and user stack, then prepares the first user frame
+/// with the ELF entry point and the ELF stack top. `program` must be the complete ELF image.
+///
+/// # Errors
+///
+/// Returns [`SpawnError::InvalidExecutable`] when the ELF is malformed or has an unsupported
+/// mapping, [`SpawnError::OutOfMemory`] when frame allocation fails, or the corresponding error
+/// when the table or stack is unavailable.
+pub fn spawn_user_actor(
+    program: &'static [u8],
+    parent_address: Option<LocalAddress>,
+    configuration: Configuration,
+) -> Result<LocalAddress, SpawnError> {
+    spawn_user(parent_address, configuration, |frame_allocator, private_value| {
+        let (address_space, entry_point) =
+            build_elf_user_address_space(frame_allocator, private_value, program)?;
+        let entry_point =
+            usize::try_from(entry_point).map_err(|_| UserMapError::InvalidRegion)?;
+        Ok((address_space, entry_point, elf_user_stack_top()))
+    })
+}
+
+/// Starts an EL0 actor from raw machine code. For self-tests, not an ELF loader.
+///
+/// # Errors
+///
+/// Returns [`SpawnError`] when no slot or memory is available.
+pub fn spawn_raw_user_actor(
+    program: &'static [u8],
+    parent_address: Option<LocalAddress>,
+    configuration: Configuration,
+) -> Result<LocalAddress, SpawnError> {
+    spawn_user(parent_address, configuration, |frame_allocator, private_value| {
+        let address_space = build_user_address_space(frame_allocator, private_value, program)?;
+        Ok((address_space, TEST_CODE_ADDRESS, user_stack_top()))
+    })
 }
 
 /// Runs `operation` on the control block at `slot_index`, holding its lock.

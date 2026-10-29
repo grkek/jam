@@ -2,22 +2,25 @@
 //!
 //! Requires a 39-bit TTBR0 user virtual-address range and 4 KiB pages.
 //! This loader does not support PIE, dynamic linking, or ELF relocations.
+//! The ELF fields are decoded byte by byte, so no unsafe code and no alignment assumptions.
 
-use core::{cmp, mem, ptr};
+use core::cmp;
 
 use foundation::page_table_entry::{PAGE_BYTE_COUNT, UserAccess};
-
-use crate::memory::user_memory::{TEST_CODE_ADDRESS, TEST_DATA_ADDRESS};
 
 use super::{
     address_space::AddressSpace,
     frame_allocator::FrameAllocator,
     private_page,
-    user_memory::{self, UserMapError},
+    user_memory::{self, TEST_CODE_ADDRESS, TEST_DATA_ADDRESS, UserMapError},
 };
 
 const ELF_MAGIC_BYTES: &[u8] = &[0x7f, b'E', b'L', b'F'];
+const ELF_CLASS_INDEX: usize = 4;
+const ELF_DATA_INDEX: usize = 5;
+const ELF_VERSION_INDEX: usize = 6;
 
+const PAGE_SIZE: u64 = PAGE_BYTE_COUNT as u64;
 const USER_VIRTUAL_ADDRESS_LIMIT: u64 = 1 << 39;
 const ELF_USER_STACK_VIRTUAL_ADDRESS: usize = 0x0000_007f_ffff_0000;
 
@@ -27,6 +30,9 @@ const ELF_CURRENT_VERSION: u8 = 1;
 const ELF_TYPE_EXECUTABLE: u16 = 2;
 const ELF_MACHINE_AARCH64: u16 = 183;
 const ELF_VERSION_CURRENT: u32 = 1;
+
+const ELF_HEADER_BYTE_COUNT: usize = 64;
+const PROGRAM_HEADER_BYTE_COUNT: usize = 56;
 
 const PROGRAM_HEADER_TYPE_LOAD: u32 = 1;
 const PROGRAM_HEADER_TYPE_DYNAMIC: u32 = 2;
@@ -56,50 +62,63 @@ pub const EL0_FAULT_PROGRAM: &[u8] = &[
 /// The embedded, statically linked Genesis service.
 pub const EL0_GENESIS_PROGRAM: &[u8] = include_bytes!(env!("GENESIS_ELF_PATH"));
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Elf64Header {
-    e_ident: [u8; 16],
-    e_type: u16,
-    e_machine: u16,
-    e_version: u32,
-    e_entry: u64,
-    e_phoff: u64,
-    e_shoff: u64,
-    e_flags: u32,
-    e_hsize: u16,
-    e_phentsize: u16,
-    e_phnum: u16,
-    e_shentsize: u16,
-    e_shnum: u16,
-    e_shstrndx: u16,
+/// The fields of the ELF header this loader uses.
+struct ElfHeader {
+    entry_point: u64,
+    program_header_offset: u64,
+    program_header_count: u16,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Elf64ProgramHeader {
-    p_type: u32,
-    p_flags: u32,
-    p_offset: u64,
-    p_vaddr: u64,
-    p_paddr: u64,
-    p_filesz: u64,
-    p_memsz: u64,
-    p_align: u64,
+/// The fields of a program header this loader uses.
+struct ProgramHeader {
+    segment_type: u32,
+    flags: u32,
+    file_offset: u64,
+    virtual_address: u64,
+    file_size: u64,
+    memory_size: u64,
+    alignment: u64,
 }
 
-/// Converts a malformed ELF or unsupported mapping request into InvalidRegion.
+/// Converts a malformed ELF or unsupported mapping request into `InvalidRegion`.
 fn invalid_region() -> UserMapError {
     UserMapError::InvalidRegion
 }
 
+fn read_array<const N: usize>(bytes: &[u8], offset: usize) -> Option<[u8; N]> {
+    let end = offset.checked_add(N)?;
+    bytes.get(offset..end)?.try_into().ok()
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, UserMapError> {
+    read_array(bytes, offset)
+        .map(u16::from_le_bytes)
+        .ok_or_else(invalid_region)
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, UserMapError> {
+    read_array(bytes, offset)
+        .map(u32::from_le_bytes)
+        .ok_or_else(invalid_region)
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, UserMapError> {
+    read_array(bytes, offset)
+        .map(u64::from_le_bytes)
+        .ok_or_else(invalid_region)
+}
+
+fn to_usize(value: u64) -> Result<usize, UserMapError> {
+    usize::try_from(value).map_err(|_| invalid_region())
+}
+
 fn page_floor(address: u64) -> u64 {
-    address & !((PAGE_BYTE_COUNT as u64) - 1)
+    address & !(PAGE_SIZE - 1)
 }
 
 fn page_ceiling(address: u64) -> Result<u64, UserMapError> {
     address
-        .checked_add((PAGE_BYTE_COUNT as u64) - 1)
+        .checked_add(PAGE_SIZE - 1)
         .map(page_floor)
         .ok_or_else(invalid_region)
 }
@@ -108,152 +127,171 @@ fn intervals_overlap(start_a: u64, end_a: u64, start_b: u64, end_b: u64) -> bool
     start_a < end_b && start_b < end_a
 }
 
-fn read_program_header(
-    program: &[u8],
-    header: &Elf64Header,
-    index: usize,
-) -> Result<Elf64ProgramHeader, UserMapError> {
-    let header_table_offset = usize::try_from(header.e_phoff).map_err(|_| invalid_region())?;
-    let entry_offset = index
-        .checked_mul(mem::size_of::<Elf64ProgramHeader>())
-        .and_then(|offset| header_table_offset.checked_add(offset))
-        .ok_or_else(invalid_region)?;
-    let entry_end = entry_offset
-        .checked_add(mem::size_of::<Elf64ProgramHeader>())
-        .ok_or_else(invalid_region)?;
-    let entry_bytes = program
-        .get(entry_offset..entry_end)
-        .ok_or_else(invalid_region)?;
+/// Reads and checks the ELF header. Everything it returns has been range-checked.
+fn parse_header(program: &[u8]) -> Result<ElfHeader, UserMapError> {
+    let identification: [u8; 16] = read_array(program, 0).ok_or_else(invalid_region)?;
+    let program_header_count = read_u16(program, 56)?;
 
-    // The ELF format is little-endian and is decoded on a little-endian AArch64 target.
-    Ok(unsafe { ptr::read_unaligned(entry_bytes.as_ptr().cast::<Elf64ProgramHeader>()) })
-}
-
-/// Validates the entire program *before* allocating user frames.
-/// Returns the ELF entry address.
-fn validate_elf(program: &[u8]) -> Result<(Elf64Header, u64), UserMapError> {
-    if program.len() < mem::size_of::<Elf64Header>() {
-        return Err(invalid_region());
-    }
-    let header = unsafe { ptr::read_unaligned(program.as_ptr().cast::<Elf64Header>()) };
-
-    if !header.e_ident.starts_with(ELF_MAGIC_BYTES)
-        || header.e_ident[4] != ELF_CLASS_64
-        || header.e_ident[5] != ELF_DATA_LITTLE_ENDIAN
-        || header.e_ident[6] != ELF_CURRENT_VERSION
-        || header.e_type != ELF_TYPE_EXECUTABLE
-        || header.e_machine != ELF_MACHINE_AARCH64
-        || header.e_version != ELF_VERSION_CURRENT
-        || header.e_hsize as usize != mem::size_of::<Elf64Header>()
-        || header.e_phentsize as usize != mem::size_of::<Elf64ProgramHeader>()
-        || header.e_phnum == 0
+    if !identification.starts_with(ELF_MAGIC_BYTES)
+        || identification.get(ELF_CLASS_INDEX) != Some(&ELF_CLASS_64)
+        || identification.get(ELF_DATA_INDEX) != Some(&ELF_DATA_LITTLE_ENDIAN)
+        || identification.get(ELF_VERSION_INDEX) != Some(&ELF_CURRENT_VERSION)
+        || read_u16(program, 16)? != ELF_TYPE_EXECUTABLE
+        || read_u16(program, 18)? != ELF_MACHINE_AARCH64
+        || read_u32(program, 20)? != ELF_VERSION_CURRENT
+        || usize::from(read_u16(program, 52)?) != ELF_HEADER_BYTE_COUNT
+        || usize::from(read_u16(program, 54)?) != PROGRAM_HEADER_BYTE_COUNT
+        || program_header_count == 0
     {
         return Err(invalid_region());
     }
 
-    let header_table_offset = usize::try_from(header.e_phoff).map_err(|_| invalid_region())?;
-    let header_table_byte_count = (header.e_phnum as usize)
-        .checked_mul(mem::size_of::<Elf64ProgramHeader>())
+    Ok(ElfHeader {
+        entry_point: read_u64(program, 24)?,
+        program_header_offset: read_u64(program, 32)?,
+        program_header_count,
+    })
+}
+
+/// Reads one program header. The header table must already have been checked against the file size.
+fn read_program_header(
+    program: &[u8],
+    header: &ElfHeader,
+    index: usize,
+) -> Result<ProgramHeader, UserMapError> {
+    let table_offset = to_usize(header.program_header_offset)?;
+    let offset = index
+        .checked_mul(PROGRAM_HEADER_BYTE_COUNT)
+        .and_then(|entry_offset| table_offset.checked_add(entry_offset))
         .ok_or_else(invalid_region)?;
-    let header_table_end = header_table_offset
-        .checked_add(header_table_byte_count)
+    let entry = program
+        .get(
+            offset
+                ..offset
+                    .checked_add(PROGRAM_HEADER_BYTE_COUNT)
+                    .ok_or_else(invalid_region)?,
+        )
         .ok_or_else(invalid_region)?;
-    if header_table_end > program.len() {
+
+    Ok(ProgramHeader {
+        segment_type: read_u32(entry, 0)?,
+        flags: read_u32(entry, 4)?,
+        file_offset: read_u64(entry, 8)?,
+        virtual_address: read_u64(entry, 16)?,
+        file_size: read_u64(entry, 32)?,
+        memory_size: read_u64(entry, 40)?,
+        alignment: read_u64(entry, 48)?,
+    })
+}
+
+/// Validates the entire program *before* allocating user frames.
+fn validate_elf(program: &[u8]) -> Result<ElfHeader, UserMapError> {
+    let header = parse_header(program)?;
+
+    let table_offset = to_usize(header.program_header_offset)?;
+    let table_byte_count = usize::from(header.program_header_count)
+        .checked_mul(PROGRAM_HEADER_BYTE_COUNT)
+        .ok_or_else(invalid_region)?;
+    let table_end = table_offset
+        .checked_add(table_byte_count)
+        .ok_or_else(invalid_region)?;
+    if table_end > program.len() {
         return Err(invalid_region());
     }
 
-    let entry_point = header.e_entry;
-    if entry_point < PAGE_BYTE_COUNT as u64
-        || entry_point % 4 != 0
-        || entry_point >= USER_VIRTUAL_ADDRESS_LIMIT
+    let entry_point = header.entry_point;
+    if entry_point < PAGE_SIZE || entry_point % 4 != 0 || entry_point >= USER_VIRTUAL_ADDRESS_LIMIT
     {
         return Err(invalid_region());
     }
 
     let stack_start = ELF_USER_STACK_VIRTUAL_ADDRESS as u64;
-    let stack_end = stack_start + PAGE_BYTE_COUNT as u64;
+    let stack_end = stack_start + PAGE_SIZE;
     let mut found_loadable_segment = false;
     let mut entry_is_file_backed_executable = false;
 
-    for index in 0..header.e_phnum as usize {
+    for index in 0..usize::from(header.program_header_count) {
         let segment = read_program_header(program, &header, index)?;
-        if segment.p_type == PROGRAM_HEADER_TYPE_INTERPRETER
-            || segment.p_type == PROGRAM_HEADER_TYPE_DYNAMIC
+        if segment.segment_type == PROGRAM_HEADER_TYPE_INTERPRETER
+            || segment.segment_type == PROGRAM_HEADER_TYPE_DYNAMIC
         {
-            // JAM does not provide a dynamic linker/relocation runtime yet.
+            // JAM does not provide a dynamic linker or relocation runtime yet.
             return Err(invalid_region());
         }
-        if segment.p_type != PROGRAM_HEADER_TYPE_LOAD {
+        if segment.segment_type != PROGRAM_HEADER_TYPE_LOAD {
             continue;
         }
-        if segment.p_filesz > segment.p_memsz {
+        if segment.file_size > segment.memory_size {
             return Err(invalid_region());
         }
 
-        let segment_file_offset =
-            usize::try_from(segment.p_offset).map_err(|_| invalid_region())?;
-        let segment_file_size = usize::try_from(segment.p_filesz).map_err(|_| invalid_region())?;
-        let segment_file_end = segment_file_offset
-            .checked_add(segment_file_size)
+        let file_start = to_usize(segment.file_offset)?;
+        let file_end = file_start
+            .checked_add(to_usize(segment.file_size)?)
             .ok_or_else(invalid_region)?;
-        if segment_file_end > program.len() {
+        if file_end > program.len() {
             return Err(invalid_region());
         }
 
-        if segment.p_align > 1
-            && (!segment.p_align.is_power_of_two()
-                || segment.p_vaddr % segment.p_align != segment.p_offset % segment.p_align)
+        if segment.alignment > 1
+            && (!segment.alignment.is_power_of_two()
+                || segment.virtual_address % segment.alignment
+                    != segment.file_offset % segment.alignment)
         {
             return Err(invalid_region());
         }
-        // The file and VA offsets must also be congruent modulo the page granule.
-        if segment.p_vaddr % PAGE_BYTE_COUNT as u64 != segment.p_offset % PAGE_BYTE_COUNT as u64 {
+        // The file and virtual offsets must also agree modulo the page size.
+        if segment.virtual_address % PAGE_SIZE != segment.file_offset % PAGE_SIZE {
             return Err(invalid_region());
         }
 
-        let writable = segment.p_flags & PROGRAM_FLAG_WRITE != 0;
-        let executable = segment.p_flags & PROGRAM_FLAG_EXECUTE != 0;
+        let writable = segment.flags & PROGRAM_FLAG_WRITE != 0;
+        let executable = segment.flags & PROGRAM_FLAG_EXECUTE != 0;
         if writable && executable {
-            return Err(invalid_region()); // W^X
+            return Err(invalid_region()); // write-xor-execute
         }
 
-        if segment.p_memsz == 0 {
+        if segment.memory_size == 0 {
             continue;
         }
         found_loadable_segment = true;
         let segment_end = segment
-            .p_vaddr
-            .checked_add(segment.p_memsz)
+            .virtual_address
+            .checked_add(segment.memory_size)
             .ok_or_else(invalid_region)?;
-        if segment.p_vaddr < PAGE_BYTE_COUNT as u64
+        if segment.virtual_address < PAGE_SIZE
             || segment_end > USER_VIRTUAL_ADDRESS_LIMIT
-            || intervals_overlap(segment.p_vaddr, segment_end, stack_start, stack_end)
+            || intervals_overlap(segment.virtual_address, segment_end, stack_start, stack_end)
         {
             return Err(invalid_region());
         }
 
-        // A minimal static loader rejects byte-range overlaps between PT_LOAD segments.
-        // It *does* support distinct segments sharing the same 4 KiB page.
+        // Distinct segments may share a page, but their byte ranges must not overlap.
         for prior_index in 0..index {
             let prior = read_program_header(program, &header, prior_index)?;
-            if prior.p_type != PROGRAM_HEADER_TYPE_LOAD || prior.p_memsz == 0 {
+            if prior.segment_type != PROGRAM_HEADER_TYPE_LOAD || prior.memory_size == 0 {
                 continue;
             }
             let prior_end = prior
-                .p_vaddr
-                .checked_add(prior.p_memsz)
+                .virtual_address
+                .checked_add(prior.memory_size)
                 .ok_or_else(invalid_region)?;
-            if intervals_overlap(segment.p_vaddr, segment_end, prior.p_vaddr, prior_end) {
+            if intervals_overlap(
+                segment.virtual_address,
+                segment_end,
+                prior.virtual_address,
+                prior_end,
+            ) {
                 return Err(invalid_region());
             }
         }
 
         let file_virtual_end = segment
-            .p_vaddr
-            .checked_add(segment.p_filesz)
+            .virtual_address
+            .checked_add(segment.file_size)
             .ok_or_else(invalid_region)?;
         if executable
-            && entry_point >= segment.p_vaddr
+            && entry_point >= segment.virtual_address
             && entry_point
                 .checked_add(4)
                 .is_some_and(|end| end <= file_virtual_end)
@@ -265,75 +303,82 @@ fn validate_elf(program: &[u8]) -> Result<(Elf64Header, u64), UserMapError> {
     if !found_loadable_segment || !entry_is_file_backed_executable {
         return Err(invalid_region());
     }
-
-    Ok((header, entry_point))
+    Ok(header)
 }
 
-/// Returns whether an earlier PT_LOAD segment already enumerated this physical page.
+/// Returns whether an earlier loadable segment already covers this page.
 fn page_was_visited(
     program: &[u8],
-    elf_header: &Elf64Header,
+    header: &ElfHeader,
     current_segment_index: usize,
     page_address: u64,
 ) -> Result<bool, UserMapError> {
     for prior_index in 0..current_segment_index {
-        let prior = read_program_header(program, elf_header, prior_index)?;
-        if prior.p_type != PROGRAM_HEADER_TYPE_LOAD || prior.p_memsz == 0 {
+        let prior = read_program_header(program, header, prior_index)?;
+        if prior.segment_type != PROGRAM_HEADER_TYPE_LOAD || prior.memory_size == 0 {
             continue;
         }
         let prior_end = prior
-            .p_vaddr
-            .checked_add(prior.p_memsz)
+            .virtual_address
+            .checked_add(prior.memory_size)
             .ok_or_else(invalid_region)?;
-        if page_floor(prior.p_vaddr) <= page_address && page_address < page_ceiling(prior_end)? {
+        if page_floor(prior.virtual_address) <= page_address
+            && page_address < page_ceiling(prior_end)?
+        {
             return Ok(true);
         }
     }
     Ok(false)
 }
 
-/// Compose one complete page from all loadable segments that touch it.
-/// Supports unaligned virtual addresses and distinct segments sharing a page.
+/// Composes one complete page from every loadable segment that touches it.
+///
+/// Returns the access the page needs. A page shared by a writable and an executable segment is
+/// refused, because it could not be both under write-xor-execute.
 fn build_segment_page(
     program: &[u8],
-    elf_header: &Elf64Header,
+    header: &ElfHeader,
     page_address: u64,
     page_bytes: &mut [u8; PAGE_BYTE_COUNT],
 ) -> Result<(UserAccess, bool), UserMapError> {
-    let page_end = page_address + PAGE_BYTE_COUNT as u64;
+    let page_end = page_address + PAGE_SIZE;
     let mut writable = false;
     let mut executable = false;
     page_bytes.fill(0);
 
-    for index in 0..elf_header.e_phnum as usize {
-        let segment = read_program_header(program, elf_header, index)?;
-        if segment.p_type != PROGRAM_HEADER_TYPE_LOAD || segment.p_memsz == 0 {
+    for index in 0..usize::from(header.program_header_count) {
+        let segment = read_program_header(program, header, index)?;
+        if segment.segment_type != PROGRAM_HEADER_TYPE_LOAD || segment.memory_size == 0 {
             continue;
         }
-        let segment_end = segment.p_vaddr + segment.p_memsz; // checked in validate_elf
-        if !intervals_overlap(page_address, page_end, segment.p_vaddr, segment_end) {
+        let segment_end = segment.virtual_address + segment.memory_size; // range-checked by validate_elf
+        if !intervals_overlap(page_address, page_end, segment.virtual_address, segment_end) {
             continue;
         }
 
-        writable |= segment.p_flags & PROGRAM_FLAG_WRITE != 0;
-        executable |= segment.p_flags & PROGRAM_FLAG_EXECUTE != 0;
+        writable |= segment.flags & PROGRAM_FLAG_WRITE != 0;
+        executable |= segment.flags & PROGRAM_FLAG_EXECUTE != 0;
         if writable && executable {
-            // A shared page cannot simultaneously be RW and executable under W^X.
             return Err(invalid_region());
         }
 
-        let file_end = segment.p_vaddr + segment.p_filesz; // checked in validate_elf
-        let copy_start = cmp::max(page_address, segment.p_vaddr);
+        let file_end = segment.virtual_address + segment.file_size; // range-checked by validate_elf
+        let copy_start = cmp::max(page_address, segment.virtual_address);
         let copy_end = cmp::min(page_end, file_end);
         if copy_start >= copy_end {
-            continue; // zero-initialized .bss or unused part of a page
+            continue; // zero-initialised data or an unused part of the page
         }
 
-        let destination_offset = (copy_start - page_address) as usize;
-        let copy_length = (copy_end - copy_start) as usize;
-        let source_offset = (segment.p_offset + (copy_start - segment.p_vaddr)) as usize;
-        page_bytes[destination_offset..destination_offset + copy_length]
-            .copy_from_slice(&program[source_offset..source_offset + copy_length]);
+        let destination_offset = to_usize(copy_start - page_address)?;
+        let copy_length = to_usize(copy_end - copy_start)?;
+        let source_offset = to_usize(segment.file_offset + (copy_start - segment.virtual_address))?;
+        let destination = page_bytes
+            .get_mut(destination_offset..destination_offset + copy_length)
+            .ok_or_else(invalid_region)?;
+        let source = program
+            .get(source_offset..source_offset + copy_length)
+            .ok_or_else(invalid_region)?;
+        destination.copy_from_slice(source);
     }
 
     let access = if writable {
@@ -344,33 +389,78 @@ fn build_segment_page(
     Ok((access, executable))
 }
 
+/// Maps every loadable page once, then the stack page.
+fn map_segments_and_stack(
+    frame_allocator: &mut FrameAllocator,
+    address_space: &mut AddressSpace,
+    program: &[u8],
+    header: &ElfHeader,
+) -> Result<(), UserMapError> {
+    for index in 0..usize::from(header.program_header_count) {
+        let segment = read_program_header(program, header, index)?;
+        if segment.segment_type != PROGRAM_HEADER_TYPE_LOAD || segment.memory_size == 0 {
+            continue;
+        }
+
+        let segment_end = segment.virtual_address + segment.memory_size; // range-checked by validate_elf
+        let end_page = page_ceiling(segment_end)?;
+        let mut page_address = page_floor(segment.virtual_address);
+        while page_address < end_page {
+            if !page_was_visited(program, header, index, page_address)? {
+                let mut page_bytes = [0_u8; PAGE_BYTE_COUNT];
+                let (access, executable) =
+                    build_segment_page(program, header, page_address, &mut page_bytes)?;
+                user_memory::map_user_region(
+                    frame_allocator,
+                    address_space,
+                    to_usize(page_address)?,
+                    PAGE_BYTE_COUNT,
+                    access,
+                    executable,
+                    &page_bytes,
+                )?;
+            }
+            page_address += PAGE_SIZE;
+        }
+    }
+
+    user_memory::map_user_region(
+        frame_allocator,
+        address_space,
+        ELF_USER_STACK_VIRTUAL_ADDRESS,
+        PAGE_BYTE_COUNT,
+        UserAccess::ReadWrite,
+        false,
+        &[],
+    )
+}
+
 /// Validates and maps a statically linked AArch64 ELF64 executable and a one-page user stack.
 ///
-/// `map_user_region` is expected to copy the supplied data synchronously and zero-fill
-/// all other bytes. Because executable segments are composed page-by-page, this function
-/// uses a 4 KiB temporary buffer on the kernel stack.
+/// Returns the address space and the entry point. When anything fails after the address space
+/// exists, everything already taken is given back before the error is returned.
 ///
-/// NOTE: the memory-mapping layer must perform appropriate instruction-cache maintenance
-/// after copying executable bytes through the kernel's writable alias.
+/// # Errors
+///
+/// Fails on a malformed or unsupported image, or when memory runs out.
 pub fn build_elf_user_address_space(
     frame_allocator: &mut FrameAllocator,
     private_initial_value: u64,
     program: &[u8],
 ) -> Result<(AddressSpace, u64), UserMapError> {
-    let (elf_header, entry_point) = validate_elf(program)?;
+    let header = validate_elf(program)?;
 
-    // This loader allocates every loadable page eagerly. Fail before partially mapping
-    // a clearly oversized image. This count conservatively includes shared pages twice.
-    let mut requested_page_count = 2u64; // private page and stack; page tables need more
-    for index in 0..elf_header.e_phnum as usize {
-        let segment = read_program_header(program, &elf_header, index)?;
-        if segment.p_type != PROGRAM_HEADER_TYPE_LOAD || segment.p_memsz == 0 {
+    // Fail early on a clearly oversized image. Page tables need frames too, so this is a floor.
+    let mut requested_page_count = 2_u64; // the private page and the stack
+    for index in 0..usize::from(header.program_header_count) {
+        let segment = read_program_header(program, &header, index)?;
+        if segment.segment_type != PROGRAM_HEADER_TYPE_LOAD || segment.memory_size == 0 {
             continue;
         }
-        let start = page_floor(segment.p_vaddr);
-        let end = page_ceiling(segment.p_vaddr + segment.p_memsz)?;
+        let start = page_floor(segment.virtual_address);
+        let end = page_ceiling(segment.virtual_address + segment.memory_size)?;
         requested_page_count = requested_page_count
-            .checked_add((end - start) / PAGE_BYTE_COUNT as u64)
+            .checked_add((end - start) / PAGE_SIZE)
             .ok_or_else(invalid_region)?;
     }
     if requested_page_count >= frame_allocator.free_frame_count() as u64 {
@@ -381,55 +471,26 @@ pub fn build_elf_user_address_space(
         private_page::build_address_space_with_private_page(frame_allocator, private_initial_value)
             .ok_or(UserMapError::OutOfFrames)?;
 
-    // Enumerate each page exactly once, even if two PT_LOAD segments share it.
-    for index in 0..elf_header.e_phnum as usize {
-        let segment = read_program_header(program, &elf_header, index)?;
-        if segment.p_type != PROGRAM_HEADER_TYPE_LOAD || segment.p_memsz == 0 {
-            continue;
-        }
-
-        let segment_end = segment.p_vaddr + segment.p_memsz; // checked in validate_elf
-        let end_page = page_ceiling(segment_end)?;
-        let mut page_address = page_floor(segment.p_vaddr);
-        while page_address < end_page {
-            if !page_was_visited(program, &elf_header, index, page_address)? {
-                let mut page_bytes = [0u8; PAGE_BYTE_COUNT];
-                let (access, executable) =
-                    build_segment_page(program, &elf_header, page_address, &mut page_bytes)?;
-                user_memory::map_user_region(
-                    frame_allocator,
-                    &mut address_space,
-                    page_address as usize,
-                    PAGE_BYTE_COUNT,
-                    access,
-                    executable,
-                    &page_bytes,
-                )?;
-            }
-            page_address += PAGE_BYTE_COUNT as u64;
+    match map_segments_and_stack(frame_allocator, &mut address_space, program, &header) {
+        Ok(()) => Ok((address_space, header.entry_point)),
+        Err(error) => {
+            address_space.destroy(frame_allocator);
+            Err(error)
         }
     }
-
-    user_memory::map_user_region(
-        frame_allocator,
-        &mut address_space,
-        ELF_USER_STACK_VIRTUAL_ADDRESS,
-        PAGE_BYTE_COUNT,
-        UserAccess::ReadWrite,
-        false,
-        &[],
-    )?;
-
-    Ok((address_space, entry_point))
 }
 
+/// The top of the one-page stack that `build_elf_user_address_space` maps.
 #[must_use]
-/// :ditto:
 pub const fn elf_user_stack_top() -> usize {
     ELF_USER_STACK_VIRTUAL_ADDRESS + PAGE_BYTE_COUNT
 }
 
-/// Existing tiny raw-code actor helper retained for self-tests (not an ELF loader).
+/// Builds an address space for a tiny raw-code program, kept for the self-tests. Not an ELF loader.
+///
+/// # Errors
+///
+/// Fails when memory runs out.
 pub fn build_user_address_space(
     frame_allocator: &mut FrameAllocator,
     private_initial_value: u64,
@@ -439,7 +500,7 @@ pub fn build_user_address_space(
         private_page::build_address_space_with_private_page(frame_allocator, private_initial_value)
             .ok_or(UserMapError::OutOfFrames)?;
 
-    user_memory::map_user_region(
+    let mapped = user_memory::map_user_region(
         frame_allocator,
         &mut address_space,
         TEST_CODE_ADDRESS,
@@ -447,23 +508,30 @@ pub fn build_user_address_space(
         UserAccess::ReadOnly,
         true,
         program,
-    )?;
+    )
+    .and_then(|()| {
+        user_memory::map_user_region(
+            frame_allocator,
+            &mut address_space,
+            TEST_DATA_ADDRESS,
+            PAGE_BYTE_COUNT,
+            UserAccess::ReadWrite,
+            false,
+            &[],
+        )
+    });
 
-    user_memory::map_user_region(
-        frame_allocator,
-        &mut address_space,
-        TEST_DATA_ADDRESS,
-        PAGE_BYTE_COUNT,
-        UserAccess::ReadWrite,
-        false,
-        &[],
-    )?;
-
-    Ok(address_space)
+    match mapped {
+        Ok(()) => Ok(address_space),
+        Err(error) => {
+            address_space.destroy(frame_allocator);
+            Err(error)
+        }
+    }
 }
 
+/// The top of the data page that `build_user_address_space` maps, used as the stack.
 #[must_use]
-/// :ditto:
 pub const fn user_stack_top() -> usize {
     TEST_DATA_ADDRESS + PAGE_BYTE_COUNT
 }

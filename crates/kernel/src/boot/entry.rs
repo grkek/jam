@@ -261,25 +261,21 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     start_current_core_tick();
 
-    let _genesis_address =
-        match spawn_user_actor(&EL0_GENESIS_PROGRAM, None, Configuration::default()) {
-            Ok(address) => {
-                information!(
-                    EarlyConsole,
-                    boot_ticks,
-                    "Genesis actor spawned successfully at address {address}"
-                );
-                address
-            }
-            Err(spawn_error) => {
-                error!(
-                    EarlyConsole,
-                    boot_ticks, "Fatal: failed to spawn Genesis actor: {spawn_error:?}"
-                );
-                power_off_or_park(conduit);
-            }
-        };
-
+    match spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default()) {
+        Ok(address) => information!(
+            EarlyConsole,
+            boot_ticks,
+            "Genesis actor spawned successfully at address {address}"
+        ),
+        Err(spawn_error) => {
+            error!(
+                EarlyConsole,
+                boot_ticks, "Fatal: failed to spawn Genesis actor: {spawn_error:?}"
+            );
+            power_off_or_park(conduit);
+        }
+    }
+    
     information!(
         EarlyConsole,
         boot_ticks,

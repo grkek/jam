@@ -1,5 +1,6 @@
 # Build output
 /target/
+/tools/xtask/target/
 **/*.rs.bk
 
 # Kernel artifacts
