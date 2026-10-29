@@ -1,3 +1,3 @@
-# observability
+# Observability
 
 To be written.

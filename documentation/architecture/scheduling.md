@@ -1,3 +1,3 @@
-# scheduling
+# Scheduling
 
 To be written.

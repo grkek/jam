@@ -1,3 +1,3 @@
-# lifecycle
+# Lifecycle
 
 To be written.

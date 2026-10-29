@@ -1,3 +1,3 @@
-# distribution
+# Distribution
 
 To be written.

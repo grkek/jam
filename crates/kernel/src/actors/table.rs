@@ -159,13 +159,17 @@ pub fn spawn_user_actor(
     parent_address: Option<LocalAddress>,
     configuration: Configuration,
 ) -> Result<LocalAddress, SpawnError> {
-    spawn_user(parent_address, configuration, |frame_allocator, private_value| {
-        let (address_space, entry_point) =
-            build_elf_user_address_space(frame_allocator, private_value, program)?;
-        let entry_point =
-            usize::try_from(entry_point).map_err(|_| UserMapError::InvalidRegion)?;
-        Ok((address_space, entry_point, elf_user_stack_top()))
-    })
+    spawn_user(
+        parent_address,
+        configuration,
+        |frame_allocator, private_value| {
+            let (address_space, entry_point) =
+                build_elf_user_address_space(frame_allocator, private_value, program)?;
+            let entry_point =
+                usize::try_from(entry_point).map_err(|_| UserMapError::InvalidRegion)?;
+            Ok((address_space, entry_point, elf_user_stack_top()))
+        },
+    )
 }
 
 /// Starts an EL0 actor from raw machine code. For self-tests, not an ELF loader.
@@ -178,10 +182,14 @@ pub fn spawn_raw_user_actor(
     parent_address: Option<LocalAddress>,
     configuration: Configuration,
 ) -> Result<LocalAddress, SpawnError> {
-    spawn_user(parent_address, configuration, |frame_allocator, private_value| {
-        let address_space = build_user_address_space(frame_allocator, private_value, program)?;
-        Ok((address_space, TEST_CODE_ADDRESS, user_stack_top()))
-    })
+    spawn_user(
+        parent_address,
+        configuration,
+        |frame_allocator, private_value| {
+            let address_space = build_user_address_space(frame_allocator, private_value, program)?;
+            Ok((address_space, TEST_CODE_ADDRESS, user_stack_top()))
+        },
+    )
 }
 
 /// Runs `operation` on the control block at `slot_index`, holding its lock.

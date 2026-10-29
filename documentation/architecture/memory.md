@@ -1,3 +1,3 @@
-# memory
+# Memory
 
 To be written.

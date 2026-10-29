@@ -275,7 +275,7 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
             power_off_or_park(conduit);
         }
     }
-    
+
     information!(
         EarlyConsole,
         boot_ticks,

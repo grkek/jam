@@ -35,5 +35,8 @@ fn main() {
         stand_in
     });
 
-    println!("cargo:rustc-env=GENESIS_ELF_PATH={}", genesis_elf_path.display());
+    println!(
+        "cargo:rustc-env=GENESIS_ELF_PATH={}",
+        genesis_elf_path.display()
+    );
 }
