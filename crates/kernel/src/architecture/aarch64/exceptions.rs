@@ -16,7 +16,11 @@ use crate::{
     system_calls::{actor_calls::current_address, dispatcher},
 };
 
+#[cfg(not(feature = "raspberry-pi-4"))]
 core::arch::global_asm!(include_str!("exception_vectors.s"));
+
+#[cfg(feature = "raspberry-pi-4")]
+core::arch::global_asm!(include_str!("exception_vectors_raspberry_pi_4.s"));
 
 unsafe extern "C" {
     /// First byte of the vector table, defined in `exception_vectors.s`.

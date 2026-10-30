@@ -1,47 +1,48 @@
-//! Minimal PL011 serial output for the earliest boot and for panics.
+//! Minimal PL011 serial output for early boot and panic diagnostics.
 //!
-//! This is a boot aid, not the driver. The real console is a service actor.
-//! Each formatted write holds a lock, so lines from different cores never interleave.
+//! The firmware must select and configure the UART before entering JAM.
+//! The production console will be a driver actor. Writes are serialized to
+//! prevent interleaved log records when multiprocessing is enabled.
 
 use core::{
     fmt,
     ptr::{read_volatile, write_volatile},
 };
 
-use crate::synchronization::spin_lock::SpinLock;
 use crate::{
-    architecture::aarch64::processor::wait_for_event,
-    memory::address_translation::physical_to_virtual,
+    memory::address_translation::physical_to_virtual, synchronization::spin_lock::SpinLock,
 };
 
-/// Kernel virtual address of the selected platform's first PL011 UART.
+/// Virtual address of the platform-selected PL011 register block.
 const PL011_BASE_ADDRESS: usize =
     physical_to_virtual(crate::platform::current::PL011_UART_PHYSICAL_BASE_ADDRESS);
 /// Offset of the PL011 data register.
 const DATA_REGISTER_OFFSET: usize = 0x00;
-/// Offset of the PL011 flags register.
+/// Offset of the PL011 flag register.
 const FLAG_REGISTER_OFFSET: usize = 0x18;
-/// Flag register bit that is set while the transmit FIFO is full.
+/// Flag identifying a full transmit FIFO.
 const TRANSMIT_FIFO_FULL: u32 = 1 << 5;
 
-/// Prevents interleaving formatted messages across cores.
+/// Serializes formatted log records across execution cores.
 static CONSOLE_LOCK: SpinLock<()> = SpinLock::new(());
 
-/// Writes text to the first PL011 UART.
+/// Early platform-selected PL011 UART console.
 pub struct EarlyConsole;
 
 impl EarlyConsole {
-    /// Sends one byte to the UART.
+    /// Sends one byte after space becomes available in the transmit FIFO.
     fn write_byte(byte: u8) {
         let flag_register = (PL011_BASE_ADDRESS + FLAG_REGISTER_OFFSET) as *const u32;
         let data_register = (PL011_BASE_ADDRESS + DATA_REGISTER_OFFSET) as *mut u32;
 
-        // SAFETY: The PL011 registers are memory-mapped at a fixed physical address on QEMU
-        // `virt`, mapped as Device memory once the MMU is on. Both registers are 32 bits
-        // wide and aligned, and volatile access is how devices are read.
+        // SAFETY: Both register addresses come from the selected board's
+        // 32-bit-aligned PL011 MMIO window, which boot maps as Device memory.
+        // Volatile operations are required to access the UART registers.
         unsafe {
             while read_volatile(flag_register) & TRANSMIT_FIFO_FULL != 0 {
-                wait_for_event();
+                // A draining UART FIFO need not generate an architectural
+                // event: `wfe` here could sleep indefinitely on real hardware.
+                core::hint::spin_loop();
             }
             write_volatile(data_register, u32::from(byte));
         }
@@ -49,7 +50,7 @@ impl EarlyConsole {
 }
 
 impl fmt::Write for EarlyConsole {
-    /// Sends serial text using CRLF line endings.
+    /// Sends text with CRLF line endings.
     fn write_str(&mut self, text: &str) -> fmt::Result {
         for byte in text.bytes() {
             if byte == b'\n' {
@@ -60,7 +61,7 @@ impl fmt::Write for EarlyConsole {
         Ok(())
     }
 
-    /// Serializes a complete formatted output message.
+    /// Holds the console lock across one formatted message.
     fn write_fmt(&mut self, arguments: fmt::Arguments<'_>) -> fmt::Result {
         let _guard = CONSOLE_LOCK.lock();
         fmt::write(self, arguments)

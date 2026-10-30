@@ -29,14 +29,11 @@ pub mod system_calls;
 
 use core::fmt::Write;
 
-use architecture::aarch64::early_console::EarlyConsole;
-use foundation::device_tree::PowerStateCoordinationInterfaceConduit;
+use architecture::aarch64::{early_console::EarlyConsole, power_interface};
 
-use crate::architecture::aarch64::power_interface;
-
-/// Reports the panic on the serial console, then requests machine shutdown.
+/// Reports a panic on the serial console before stopping the machine.
 #[panic_handler]
 fn on_kernel_panic(panic_information: &core::panic::PanicInfo) -> ! {
     let _ = writeln!(EarlyConsole, "\nKERNEL PANIC: {panic_information}");
-    power_interface::system_off(PowerStateCoordinationInterfaceConduit::SecureMonitorCall)
+    power_interface::halt_machine()
 }
