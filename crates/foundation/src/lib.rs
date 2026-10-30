@@ -15,9 +15,13 @@ pub mod configuration;
 pub mod device_tree;
 pub mod farewell;
 pub mod frame_bitmap;
+/// Bounded physical memory, reservation, and CPU discovery from firmware.
+pub mod hardware_description;
 pub mod message_layout;
 pub mod node_identifier;
 pub mod page_table_entry;
+/// Physical frame ownership and reserved-memory planning for early bootstrap.
+pub mod physical_memory;
 pub mod resource_budget;
 pub mod run_queue;
 pub mod scroll;

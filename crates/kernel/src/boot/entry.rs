@@ -8,6 +8,7 @@ use foundation::{
 use super::{device_tree::load_device_tree, secondary_cores::start_secondary_cores};
 use crate::{
     actors::{
+        lifecycle::{initialise_reclamation_stack_tracking, reclamation_stack_high_water_bytes},
         message_pool::MessagePool,
         message_storage::{
             ACTOR_INBOX_BYTE_BUDGET, ACTOR_INBOX_CAPACITY, MESSAGE_MAXIMUM_PAYLOAD_BYTES,
@@ -34,7 +35,7 @@ use crate::{
         user_program::EL0_GENESIS_PROGRAM,
     },
     scheduling::{
-        core_local::register_current_core,
+        core_local::{CORE_MAXIMUM, register_current_core},
         idle::{initialise_interrupt_stack_tracking, install_idle_frames},
         scheduler::start_current_core_tick,
     },
@@ -87,8 +88,13 @@ fn run_frame_allocator_self_test(frame_allocator: &mut FrameAllocator) {
         );
     }
 
-    let _ = frame_allocator.free_frame(first_frame);
-    let _ = frame_allocator.free_frame(second_frame);
+    frame_allocator
+        .free_frame(first_frame)
+        .expect("Failed to release first test frame");
+
+    frame_allocator
+        .free_frame(second_frame)
+        .expect("Failed to release second test frame");
 
     if frame_allocator.free_frame_count() == initial_free_count {
         information!(
@@ -154,7 +160,63 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
         }
     };
     let summary = device_tree.summary;
+    // Discovery is diagnostic in Phase 2; the memory allocator and boot MMU are unchanged.
+    match &device_tree.hardware_description {
+        Ok(hardware) => {
+            information!(
+                EarlyConsole,
+                "Hardware discovery: {} RAM regions, {} reserved regions, {} CPU affinities, {} dynamic reservation requests",
+                hardware.memory_regions().len(),
+                hardware.reserved_regions().len(),
+                hardware.cpu_identifiers().len(),
+                hardware.dynamic_reservation_count(),
+            );
+            for (index, region) in hardware.memory_regions().iter().enumerate() {
+                information!(
+                    EarlyConsole,
+                    "Discovered RAM {index}: {:#x}..{:#x}",
+                    region.start_address,
+                    region.end_address(),
+                );
+            }
+            for (index, reservation) in hardware.reserved_regions().iter().enumerate() {
+                information!(
+                    EarlyConsole,
+                    "Discovered reservation {index}: {:#x}..{:#x} ({:?})",
+                    reservation.region.start_address,
+                    reservation.region.end_address(),
+                    reservation.source,
+                );
+            }
+            for (index, identifier) in hardware.cpu_identifiers().iter().enumerate() {
+                information!(
+                    EarlyConsole,
+                    "Discovered CPU {index}: affinity {identifier:#x}"
+                );
+            }
+            if hardware.dynamic_reservation_count() != 0 {
+                warning!(
+                    EarlyConsole,
+                    "Dynamic reserved-memory requests are not allocated in Phase 2",
+                );
+            }
+        }
+        Err(error) => warning!(
+            EarlyConsole,
+            "Hardware discovery unavailable: {error:?}; refusing physical memory allocation",
+        ),
+    }
+
     let conduit = summary.power_state_coordination_interface_conduit;
+
+    // Firmware discovery is now mandatory: allocating on an unknown map is unsafe.
+    let hardware = match device_tree.hardware_description {
+        Ok(hardware) => hardware,
+        Err(error) => {
+            error!(EarlyConsole, "Fatal: hardware discovery failed: {error:?}");
+            power_off_or_park(conduit);
+        }
+    };
 
     power_interface::record_conduit(conduit);
 
@@ -189,13 +251,20 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
         conduit
     );
 
-    let Some(mut frame_allocator) = initialise_frame_allocator(&summary) else {
-        error!(
-            EarlyConsole,
-            "Fatal: physical frame allocator initialization failed"
-        );
-
-        power_off_or_park(conduit);
+    let mut frame_allocator = match initialise_frame_allocator(
+        &summary,
+        &hardware,
+        device_tree.blob_address,
+        device_tree.blob_byte_count,
+    ) {
+        Ok(frame_allocator) => frame_allocator,
+        Err(error) => {
+            error!(
+                EarlyConsole,
+                "Fatal: unsafe physical memory layout: {error:?}"
+            );
+            power_off_or_park(conduit);
+        }
     };
 
     information!(
@@ -242,6 +311,18 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
     }
 
     initialise_interrupt_stack_tracking();
+    initialise_reclamation_stack_tracking();
+
+    // Verify that all reclamation stacks start with an intact pattern.
+    for core_index in 0..CORE_MAXIMUM {
+        let (used, capacity) = reclamation_stack_high_water_bytes(core_index);
+
+        assert_eq!(
+            used, 0,
+            "Reclamation stack tracking invalid on core {core_index}: \
+         {used} / {capacity} bytes already used"
+        );
+    }
 
     initialise_distributor();
 

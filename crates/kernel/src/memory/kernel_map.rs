@@ -1,8 +1,9 @@
-//! The kernel's own address space, in the upper half.
+//! The kernel's upper-half address space and per-core stack guards.
 //!
-//! Devices and all of RAM appear at `physical address + KERNEL_VIRTUAL_OFFSET`. Inside the kernel
-//! image, code is read-only and executable, constants are read-only, and everything else is
-//! writable and never executable. The lower half stays empty, ready for each actor's own space.
+//! The kernel maps RAM and devices at their physical addresses plus
+//! `KERNEL_VIRTUAL_OFFSET`. Stack guard pages are deliberately left unmapped.
+//! Code is read-only and executable; constants are read-only and non-executable.
+//! All remaining kernel data is writable and non-executable.
 
 use foundation::{
     device_tree::DeviceTreeSummary,
@@ -22,34 +23,51 @@ use crate::{
     scheduling::core_local::CORE_MAXIMUM,
 };
 
-/// Start of the device region on QEMU `virt`: interrupt controller, UART, and friends.
-const DEVICE_REGION_START_ADDRESS: usize = 0x0800_0000;
-/// End of the device region mapped for now.
-const DEVICE_REGION_END_ADDRESS: usize = 0x0a00_0000;
+/// Every stack slice starts with one unmapped 4 KiB page.
+const STACK_GUARD_BYTE_COUNT: usize = PAGE_BYTE_COUNT;
+/// Boot, idle, interrupt, and reclamation stack families.
+const STACK_REGION_COUNT: usize = 4;
 
 unsafe extern "C" {
+    /// First virtual address of executable kernel code.
     static __text_start: u8;
+    /// Exclusive virtual end of executable kernel code.
     static __text_end: u8;
+    /// First virtual address of read-only kernel constants.
     static __rodata_start: u8;
+    /// Exclusive virtual end of read-only kernel constants.
     static __rodata_end: u8;
+
+    /// First virtual address of the boot-stack allocation, including guards.
+    static __boot_stacks_bottom: u8;
+    /// Exclusive virtual end of the boot-stack allocation.
+    static __boot_stacks_top: u8;
+    /// First virtual address of the idle-stack allocation, including guards.
+    static __idle_stacks_bottom: u8;
+    /// Exclusive virtual end of the idle-stack allocation.
+    static __idle_stacks_top: u8;
+    /// First virtual address of the interrupt-stack allocation, including guards.
     static __interrupt_stacks_bottom: u8;
+    /// Exclusive virtual end of the interrupt-stack allocation.
     static __interrupt_stacks_top: u8;
+    /// First virtual address of the reclamation-stack allocation, including guards.
     static __reclamation_stacks_bottom: u8;
+    /// Exclusive virtual end of the reclamation-stack allocation.
     static __reclamation_stacks_top: u8;
 }
 
-/// Why the kernel address space could not be built.
+/// Why construction of the kernel's address space failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KernelMapError {
-    /// The root translation table could not be allocated.
+    /// A root page-table frame could not be allocated.
     AddressSpaceUnavailable,
-    /// The memory region from the device tree does not fit in this address space.
+    /// A RAM or stack region has an invalid size, address, or alignment.
     MemoryRegionUnsupported,
-    /// The kernel's code and constants do not fit in one 2 MiB block.
+    /// The protected kernel image cannot fit in the supported image block.
     ImageOutsideBlock,
-    /// An attribute combination was refused.
+    /// The requested page attributes are invalid.
     Attributes(PageAttributeError),
-    /// A mapping failed.
+    /// A translation could not be installed.
     Mapping(MapError),
 }
 
@@ -65,44 +83,37 @@ impl From<MapError> for KernelMapError {
     }
 }
 
+// Rounds an address down to a page or block boundary.
 fn align_down(address: usize, alignment: usize) -> usize {
     address & !(alignment - 1)
 }
 
+// Rounds an address up to a page or block boundary.
 fn align_up(address: usize, alignment: usize) -> usize {
     align_down(address + alignment - 1, alignment)
 }
 
-/// Builds the kernel address space and makes the calling core use it.
+/// Replaces the coarse boot mappings with protected kernel translations.
 ///
-/// The boot code already turned translation on with coarse tables. This replaces them with
-/// strict ones and switches off the lower half. The returned address space owns the translation
-/// tables and must stay alive.
-///
-/// # Errors
-///
-/// Fails when the memory layout cannot be represented. Nothing has been switched in that case.
-
-/// Builds the kernel address space and makes the calling core use it.
-///
-/// The boot code already enabled translation with coarse tables. This replaces
-/// them with strict mappings, preserving kernel permissions and leaving stack
-/// guard pages unmapped.
+/// Every stack family contains `CORE_MAXIMUM` slices. The first page in each
+/// slice is excluded from the page tables, so a downward-growing stack faults
+/// before it can continue into the preceding allocation.
 ///
 /// # Errors
 ///
-/// Fails when the memory layout cannot be represented, the stack regions
-/// are invalid, or a translation-table allocation or mapping fails.
+/// Returns an error if the memory layout or any page-table mapping is invalid.
+/// The calling core does not switch to the new translation root on failure.
 pub fn enable_kernel_address_space(
     summary: &DeviceTreeSummary,
     frame_allocator: &mut FrameAllocator,
 ) -> Result<AddressSpace, KernelMapError> {
+    // Device registers, executable code, constants, and writable data have distinct permissions.
     let device = PageAttributes::new(MemoryKind::Device, KernelAccess::ReadWrite, false)?;
     let code = PageAttributes::new(MemoryKind::Normal, KernelAccess::ReadOnly, true)?;
     let constants = PageAttributes::new(MemoryKind::Normal, KernelAccess::ReadOnly, false)?;
     let data = PageAttributes::new(MemoryKind::Normal, KernelAccess::ReadWrite, false)?;
 
-    // SAFETY: All symbols are defined by the linker script. Only their addresses are taken.
+    // The linker defines these virtual boundaries; only their addresses are read.
     let (text_start, text_end, rodata_start, rodata_end) = (
         &raw const __text_start as usize,
         &raw const __text_end as usize,
@@ -110,12 +121,17 @@ pub fn enable_kernel_address_space(
         &raw const __rodata_end as usize,
     );
 
+    // Convert linker-defined upper-half stack addresses to physical RAM addresses.
+    let boot_bottom = virtual_to_physical(&raw const __boot_stacks_bottom as usize);
+    let boot_top = virtual_to_physical(&raw const __boot_stacks_top as usize);
+    let idle_bottom = virtual_to_physical(&raw const __idle_stacks_bottom as usize);
+    let idle_top = virtual_to_physical(&raw const __idle_stacks_top as usize);
     let interrupt_bottom = virtual_to_physical(&raw const __interrupt_stacks_bottom as usize);
     let interrupt_top = virtual_to_physical(&raw const __interrupt_stacks_top as usize);
-
     let reclamation_bottom = virtual_to_physical(&raw const __reclamation_stacks_bottom as usize);
     let reclamation_top = virtual_to_physical(&raw const __reclamation_stacks_top as usize);
 
+    // Validate the RAM interval reported by the device tree.
     let memory_start = usize::try_from(summary.memory_base_address)
         .map_err(|_| KernelMapError::MemoryRegionUnsupported)?;
     let memory_byte_count = usize::try_from(summary.memory_byte_count)
@@ -124,6 +140,7 @@ pub fn enable_kernel_address_space(
         .checked_add(memory_byte_count)
         .ok_or(KernelMapError::MemoryRegionUnsupported)?;
 
+    // The executable and read-only image sections currently share one 2 MiB block.
     let image_block_start = align_down(virtual_to_physical(text_start), BLOCK_BYTE_COUNT);
     let image_block_end = image_block_start + BLOCK_BYTE_COUNT;
 
@@ -133,20 +150,23 @@ pub fn enable_kernel_address_space(
         return Err(KernelMapError::ImageOutsideBlock);
     }
 
-    // Each stack region contains CORE_MAXIMUM slices. The first page of
-    // every slice is reserved as an unmapped guard page.
+    // Each entry is a physical interval containing one slice per execution core.
     let stack_regions = [
+        (boot_bottom, boot_top),
+        (idle_bottom, idle_top),
         (interrupt_bottom, interrupt_top),
         (reclamation_bottom, reclamation_top),
     ];
 
-    let mut guard_regions = [(0usize, 0usize); 2];
+    // Each guard region records its first physical address and per-core stride.
+    let mut guard_regions = [(0usize, 0usize); STACK_REGION_COUNT];
 
     for (index, &(bottom, top)) in stack_regions.iter().enumerate() {
         let region_length = top
             .checked_sub(bottom)
             .ok_or(KernelMapError::MemoryRegionUnsupported)?;
 
+        // All stack regions must fit in RAM and divide evenly among the cores.
         if bottom < memory_start
             || top > memory_end
             || bottom % PAGE_BYTE_COUNT != 0
@@ -157,53 +177,65 @@ pub fn enable_kernel_address_space(
 
         let stride = region_length / CORE_MAXIMUM;
 
-        if stride <= PAGE_BYTE_COUNT || stride % PAGE_BYTE_COUNT != 0 {
+        // A slice must contain at least one guard page and one usable page.
+        if stride <= STACK_GUARD_BYTE_COUNT || stride % PAGE_BYTE_COUNT != 0 {
             return Err(KernelMapError::MemoryRegionUnsupported);
         }
 
         guard_regions[index] = (bottom, stride);
     }
 
-    // Checks whether a physical page belongs to a stack guard.
+    // Recognize the first unmapped page of each per-core stack slice.
     let is_guard_page = |page_address: usize| {
         guard_regions.iter().any(|&(bottom, stride)| {
             page_address >= bottom
                 && page_address - bottom < CORE_MAXIMUM * stride
-                && (page_address - bottom) % stride < PAGE_BYTE_COUNT
+                && (page_address - bottom) % stride < STACK_GUARD_BYTE_COUNT
         })
     };
 
-    // Blocks containing guard pages must use individual 4 KiB mappings.
+    // Fall back to 4 KiB mappings for any 2 MiB block containing a guard.
     let block_contains_guard = |block_address: usize| {
         guard_regions.iter().any(|&(bottom, stride)| {
             (0..CORE_MAXIMUM).any(|core_index| {
                 let guard_address = bottom + core_index * stride;
-
                 guard_address >= block_address && guard_address < block_address + BLOCK_BYTE_COUNT
             })
         })
     };
 
+    // Allocate a new translation root without changing the active boot mappings yet.
     let mut address_space =
         AddressSpace::new(frame_allocator).ok_or(KernelMapError::AddressSpaceUnavailable)?;
 
-    // Map MMIO devices using 2 MiB blocks.
-    for physical_address in
-        (DEVICE_REGION_START_ADDRESS..DEVICE_REGION_END_ADDRESS).step_by(BLOCK_BYTE_COUNT)
-    {
-        address_space.map_block(
-            frame_allocator,
-            physical_to_virtual(physical_address),
-            physical_address,
-            device,
-        )?;
+    // Map the MMIO window with device-memory attributes.
+    // Map only the device intervals named by the selected platform.
+    // This first portability phase preserves 2 MiB block mappings.
+    for region in crate::platform::current::EARLY_DEVICE_REGIONS {
+        // Reject invalid, misaligned, or RAM-overlapping MMIO regions.
+        if region.start_address >= region.end_address
+            || region.start_address % BLOCK_BYTE_COUNT != 0
+            || region.end_address % BLOCK_BYTE_COUNT != 0
+            || (region.start_address < memory_end && region.end_address > memory_start)
+        {
+            return Err(KernelMapError::MemoryRegionUnsupported);
+        }
+
+        for physical_address in (region.start_address..region.end_address).step_by(BLOCK_BYTE_COUNT)
+        {
+            address_space.map_block(
+                frame_allocator,
+                physical_to_virtual(physical_address),
+                physical_address,
+                device,
+            )?;
+        }
     }
 
     let first_block = align_down(memory_start, BLOCK_BYTE_COUNT);
     let last_block_end = align_up(memory_end, BLOCK_BYTE_COUNT);
 
-    // Map ordinary RAM using 2 MiB blocks. The image block and any
-    // blocks containing stack guards use 4 KiB page mappings instead.
+    // Use page mappings for protected image sections and blocks containing guards.
     for physical_address in (first_block..last_block_end).step_by(BLOCK_BYTE_COUNT) {
         let requires_page_mappings =
             physical_address == image_block_start || block_contains_guard(physical_address);
@@ -215,20 +247,18 @@ pub fn enable_kernel_address_space(
                 physical_address,
                 data,
             )?;
-
             continue;
         }
 
         for page_address in
             (physical_address..physical_address + BLOCK_BYTE_COUNT).step_by(PAGE_BYTE_COUNT)
         {
-            // Do not create a translation for stack guard pages.
+            // Guard pages are intentionally absent from the translation tables.
             if is_guard_page(page_address) {
                 continue;
             }
 
             let virtual_address = physical_to_virtual(page_address);
-
             let attributes = if (text_start..text_end).contains(&virtual_address) {
                 code
             } else if (rodata_start..rodata_end).contains(&virtual_address) {
@@ -241,11 +271,10 @@ pub fn enable_kernel_address_space(
         }
     }
 
-    // Verify every stack guard page has no translation.
+    // Inspect all four stack families to ensure no guard acquired a translation.
     for &(bottom, stride) in &guard_regions {
         for core_index in 0..CORE_MAXIMUM {
             let guard_address = bottom + core_index * stride;
-
             assert!(
                 address_space
                     .lookup_page(physical_to_virtual(guard_address))
@@ -255,7 +284,7 @@ pub fn enable_kernel_address_space(
         }
     }
 
-    // Install the new kernel translation root with guard pages unmapped.
+    // Install the protected kernel translations only after all mappings are valid.
     switch_kernel_translation_root(address_space.root_table_address());
 
     Ok(address_space)

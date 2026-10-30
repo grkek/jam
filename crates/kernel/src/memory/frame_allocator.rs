@@ -5,6 +5,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use foundation::{
     device_tree::DeviceTreeSummary,
     frame_bitmap::{FrameBitmap, FrameFreeError},
+    hardware_description::{HardwareDescription, PhysicalRegion},
+    physical_memory::{PhysicalMemoryError, PhysicalMemoryPlan},
 };
 
 use super::address_translation::{physical_to_virtual, virtual_to_physical};
@@ -24,55 +26,109 @@ unsafe extern "C" {
 pub struct FrameAllocator {
     bitmap: FrameBitmap<'static>,
     memory_base_address: usize,
-    reserved_frame_count: usize,
+    /// Physical reservations that must never be allocated or released.
+    physical_memory_plan: PhysicalMemoryPlan,
 }
 
-fn align_up(address: usize, alignment: usize) -> usize {
-    (address + alignment - 1) & !(alignment - 1)
+/// Why the allocator could not establish safe ownership of physical RAM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameAllocatorInitialisationError {
+    /// Initialization was already attempted on this machine.
+    AlreadyInitialised,
+    /// The boot memory extent cannot be represented by JAM's address space.
+    UnsupportedAddress,
+    /// Firmware passed an empty or invalid device-tree memory extent.
+    InvalidDeviceTree,
+    /// Discovery or firmware reservations are incompatible with the current bootstrap.
+    UnsafeMemoryLayout(PhysicalMemoryError),
+    /// A usable bitmap could not be constructed.
+    BitmapUnavailable,
 }
 
-/// Builds the frame allocator from the device tree. Succeeds only once.
+/// Constructs a frame allocator only after confirming ownership of every allocatable page.
 ///
-/// The bitmap lives in RAM right after the kernel image. Everything from the start of RAM
-/// through the bitmap counts as in use, which also protects the device tree itself.
-pub fn initialise_frame_allocator(summary: &DeviceTreeSummary) -> Option<FrameAllocator> {
+/// The first discovered RAM bank is the only one the bootstrap currently maps. Other banks
+/// are checked for overlap but not used until the kernel establishes their direct mappings.
+/// The bitmap is initialized in unreserved RAM beyond the kernel image, and all firmware,
+/// device-tree, kernel-image, and bitmap frames are marked unavailable.
+///
+/// # Errors
+///
+/// Fails closed if discovery is inconsistent, the device tree requests an unresolved dynamic
+/// reservation, `no-map` memory intersects the bootstrap direct map, or bitmap space runs out.
+pub fn initialise_frame_allocator(
+    summary: &DeviceTreeSummary,
+    hardware: &HardwareDescription,
+    device_tree_address: usize,
+    device_tree_byte_count: usize,
+) -> Result<FrameAllocator, FrameAllocatorInitialisationError> {
     if FRAME_ALLOCATOR_INITIALISED.swap(true, Ordering::AcqRel) {
-        return None;
+        return Err(FrameAllocatorInitialisationError::AlreadyInitialised);
     }
 
-    let memory_base_address = usize::try_from(summary.memory_base_address).ok()?;
-    let memory_byte_count = usize::try_from(summary.memory_byte_count).ok()?;
+    let memory_base_address = usize::try_from(summary.memory_base_address)
+        .map_err(|_| FrameAllocatorInitialisationError::UnsupportedAddress)?;
+    let memory_byte_count = usize::try_from(summary.memory_byte_count)
+        .map_err(|_| FrameAllocatorInitialisationError::UnsupportedAddress)?;
     let frame_count = memory_byte_count / FRAME_BYTE_COUNT;
-    let storage_word_count = FrameBitmap::required_storage_word_count(frame_count);
-    let storage_byte_count = storage_word_count * size_of::<u64>();
-
-    // SAFETY: `__kernel_end` is a symbol the linker script defines. Only its address is taken.
-    let kernel_end_address = virtual_to_physical(&raw const __kernel_end as usize);
-    let storage_address = align_up(kernel_end_address, FRAME_BYTE_COUNT);
-    let reserved_end_address = align_up(storage_address + storage_byte_count, FRAME_BYTE_COUNT);
-    if reserved_end_address > memory_base_address + memory_byte_count {
-        return None;
+    if frame_count == 0 {
+        return Err(FrameAllocatorInitialisationError::UnsupportedAddress);
     }
+    let storage_word_count = FrameBitmap::required_storage_word_count(frame_count);
+    let storage_byte_count = storage_word_count
+        .checked_mul(size_of::<u64>())
+        .ok_or(FrameAllocatorInitialisationError::UnsupportedAddress)?;
 
-    // SAFETY: The range from `storage_address` for `storage_byte_count` bytes lies in RAM above the
-    // kernel image, which nothing else uses yet, and RAM is mapped writable at its direct-map
-    // address. It is aligned to a frame, so aligned for `u64`. The flag above guarantees this runs
-    // once, so no other reference to the range exists. The memory is zeroed before it is viewed as
-    // initialised words.
+    // SAFETY: Only the address of the linker-defined kernel boundary is read.
+    let kernel_end_address = virtual_to_physical(&raw const __kernel_end as usize);
+    let managed_bank = PhysicalRegion::new(summary.memory_base_address, summary.memory_byte_count)
+        .ok_or(FrameAllocatorInitialisationError::UnsupportedAddress)?;
+    let device_tree_region = PhysicalRegion::new(
+        u64::try_from(device_tree_address)
+            .map_err(|_| FrameAllocatorInitialisationError::UnsupportedAddress)?,
+        u64::try_from(device_tree_byte_count)
+            .map_err(|_| FrameAllocatorInitialisationError::UnsupportedAddress)?,
+    )
+    .ok_or(FrameAllocatorInitialisationError::InvalidDeviceTree)?;
+    let plan = PhysicalMemoryPlan::new(
+        managed_bank,
+        crate::platform::current::BOOTSTRAP_MAPPED_RAM,
+        hardware.memory_regions(),
+        hardware.reserved_regions(),
+        hardware.dynamic_reservation_count(),
+        u64::try_from(kernel_end_address)
+            .map_err(|_| FrameAllocatorInitialisationError::UnsupportedAddress)?,
+        device_tree_region,
+        u64::try_from(storage_byte_count)
+            .map_err(|_| FrameAllocatorInitialisationError::UnsupportedAddress)?,
+    )
+    .map_err(FrameAllocatorInitialisationError::UnsafeMemoryLayout)?;
+
+    let bitmap_physical_address = usize::try_from(plan.bitmap_storage().start_address)
+        .map_err(|_| FrameAllocatorInitialisationError::UnsupportedAddress)?;
+    // SAFETY: `plan` has proved the selected pages are within the boot-mapped RAM bank and do
+    // not overlap the kernel image, firmware reservations, or the device tree. They are not
+    // shared by another allocator. The address is frame aligned, hence aligned for `u64`.
+    // We initialize exactly the word-count owned by this bitmap before creating the slice.
     let storage = unsafe {
-        let pointer = physical_to_virtual(storage_address) as *mut u64;
+        let pointer = physical_to_virtual(bitmap_physical_address) as *mut u64;
         core::ptr::write_bytes(pointer, 0, storage_word_count);
         core::slice::from_raw_parts_mut(pointer, storage_word_count)
     };
+    let mut bitmap = FrameBitmap::new(storage, frame_count)
+        .ok_or(FrameAllocatorInitialisationError::BitmapUnavailable)?;
 
-    let mut bitmap = FrameBitmap::new(storage, frame_count)?;
-    let reserved_frame_count = (reserved_end_address - memory_base_address) / FRAME_BYTE_COUNT;
-    bitmap.mark_used_range(0, reserved_frame_count);
+    // Round every reservation outward to frame boundaries. Firmware may reserve unaligned bytes.
+    for &region in plan.protected_regions() {
+        if let Some((first_index, count)) = plan.protected_frame_interval(region) {
+            bitmap.mark_used_range(first_index, count);
+        }
+    }
 
-    Some(FrameAllocator {
+    Ok(FrameAllocator {
         bitmap,
         memory_base_address,
-        reserved_frame_count,
+        physical_memory_plan: plan,
     })
 }
 
@@ -80,14 +136,16 @@ impl FrameAllocator {
     /// Takes a free frame and returns its physical address.
     pub fn allocate_frame(&mut self) -> Option<usize> {
         let frame_index = self.bitmap.allocate()?;
-
+        let frame_address = self
+            .memory_base_address
+            .checked_add(frame_index.checked_mul(FRAME_BYTE_COUNT)?)?;
         assert!(
-            frame_index >= self.reserved_frame_count,
-            "BUG: allocator allocated reserved frame {}",
-            frame_index
+            !self
+                .physical_memory_plan
+                .is_protected_frame(frame_address as u64),
+            "BUG: allocator allocated protected frame {frame_address:#x}"
         );
-
-        Some(self.memory_base_address + frame_index * FRAME_BYTE_COUNT)
+        Some(frame_address)
     }
 
     /// Returns a frame to the allocator.
@@ -106,11 +164,14 @@ impl FrameAllocator {
 
         let frame_index = offset / FRAME_BYTE_COUNT;
 
-        assert!(
-            frame_index >= self.reserved_frame_count,
-            "BUG: attempted to free reserved kernel frame {frame_address:#x}"
-        );
-
+        // A protected frame remains owned by firmware or the bootstrap even when its
+        // bitmap bit is set; it must never become available through `free_frame`.
+        if self
+            .physical_memory_plan
+            .is_protected_frame(frame_address as u64)
+        {
+            return Err(FrameFreeError::NotAllocated);
+        }
         self.bitmap.free(frame_index)
     }
 

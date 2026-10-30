@@ -43,13 +43,13 @@ fn free_table(table: TableFrame, level: u8, frame_allocator: &mut FrameAllocator
         let Some(entry) = table.read(index) else {
             continue;
         };
+
         if !entry.is_valid() {
             continue;
         }
-        let output = match usize::try_from(entry.output_address()) {
-            Ok(address) => address,
-            Err(_) => continue,
-        };
+
+        let output = usize::try_from(entry.output_address())
+            .expect("Invalid physical address in owned page table");
 
         match level {
             // Level 1: only next-level tables.
@@ -60,7 +60,8 @@ fn free_table(table: TableFrame, level: u8, frame_allocator: &mut FrameAllocator
                     frame_allocator,
                 );
             }
-            // Level 2: table → level 3, or 2 MiB block (free 512 frames).
+
+            // Level 2: table → level 3.
             2 if entry.is_table_or_page() => {
                 free_table(
                     TableFrame::from_physical_address(output),
@@ -68,24 +69,37 @@ fn free_table(table: TableFrame, level: u8, frame_allocator: &mut FrameAllocator
                     frame_allocator,
                 );
             }
+
+            // Level 2: 2 MiB block containing 512 frames.
             2 => {
                 for frame_index in 0..(BLOCK_BYTE_COUNT / FRAME_BYTE_COUNT) {
-                    let _ = frame_allocator.free_frame(output + frame_index * FRAME_BYTE_COUNT);
+                    release_owned_frame(frame_allocator, output + frame_index * FRAME_BYTE_COUNT);
                 }
             }
+
             // Level 3: leaf page.
             3 => {
-                let _ = frame_allocator.free_frame(output);
+                release_owned_frame(frame_allocator, output);
             }
-            _ => {}
+
+            _ => panic!("Invalid page-table level: {level}"),
         }
     }
-    let _ = frame_allocator.free_frame(table.physical_address());
+
+    // Release the translation-table frame itself.
+    release_owned_frame(frame_allocator, table.physical_address());
 }
 
 fn is_canonical(virtual_address: usize) -> bool {
     let upper_bits = virtual_address >> VIRTUAL_ADDRESS_BIT_COUNT;
     upper_bits == 0 || upper_bits == usize::MAX >> VIRTUAL_ADDRESS_BIT_COUNT
+}
+
+/// Releases an owned frame or halts on allocator inconsistency.
+fn release_owned_frame(frame_allocator: &mut FrameAllocator, physical_address: usize) {
+    frame_allocator
+        .free_frame(physical_address)
+        .unwrap_or_else(|error| panic!("Failed to release frame {physical_address:#x}: {error:?}"));
 }
 
 impl AddressSpace {

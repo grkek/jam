@@ -1,6 +1,6 @@
-//! Per-core idle context: what a core resumes when no actor is runnable.
+//! Per-core idle contexts and interrupt-stack usage tracking.
 
-use core::cell::UnsafeCell;
+use foundation::page_table_entry::PAGE_BYTE_COUNT;
 
 use crate::{
     architecture::aarch64::{exceptions::TrapFrame, processor},
@@ -9,115 +9,113 @@ use crate::{
 
 /// Size of each core's idle stack.
 const IDLE_STACK_BYTE_COUNT: usize = 8 * 1024;
-
-/// Saved state for EL1 using its own stack pointer, with interrupts enabled.
+const STACK_GUARD_BYTE_COUNT: usize = PAGE_BYTE_COUNT;
+const IDLE_STACK_STRIDE_BYTE_COUNT: usize = IDLE_STACK_BYTE_COUNT + STACK_GUARD_BYTE_COUNT;
 const SAVED_STATE_EL1_WITH_INTERRUPTS: u64 = 0b0101;
-
-/// Byte pattern used to detect interrupt-stack consumption.
-const STACK_PATTERN: u8 = 0xA5;
+const INTERRUPT_STACK_PATTERN: u8 = 0xA5;
 
 unsafe extern "C" {
-    /// First address of the interrupt-stack region, defined by the linker script.
-    static __interrupt_stacks_bottom: u8;
+    /*
+        Pointers to the top and bottom of idle stacks.
+    */
+    static __idle_stacks_bottom: u8;
+    static __idle_stacks_top: u8;
 
-    /// First address beyond the interrupt-stack region, defined by the linker script.
+    /*
+        Pointers to the top and bottom of interrupt stacks.
+    */
+    static __interrupt_stacks_bottom: u8;
     static __interrupt_stacks_top: u8;
 }
 
-/// Fills every interrupt stack with a recognizable pattern for usage tracking.
-///
-/// Must be called once by the boot core before secondary cores start taking
-/// interrupts. Each core subsequently overwrites the pattern as its stack grows.
+// Returns the mapped boundaries of a core's interrupt stack, excluding its guard page.
+fn interrupt_stack_bounds(core_index: usize) -> (usize, usize) {
+    assert!(core_index < CORE_MAXIMUM);
+
+    let region_bottom = &raw const __interrupt_stacks_bottom as usize;
+    let region_top = &raw const __interrupt_stacks_top as usize;
+    let region_byte_count = region_top
+        .checked_sub(region_bottom)
+        .expect("Invalid interrupt-stack region");
+
+    assert_eq!(region_bottom % PAGE_BYTE_COUNT, 0);
+    assert_eq!(region_byte_count % CORE_MAXIMUM, 0);
+
+    let stride = region_byte_count / CORE_MAXIMUM;
+    assert!(stride > STACK_GUARD_BYTE_COUNT);
+    assert_eq!(stride % PAGE_BYTE_COUNT, 0);
+
+    let stack_bottom = region_bottom + core_index * stride + STACK_GUARD_BYTE_COUNT;
+    let stack_top = region_bottom + (core_index + 1) * stride;
+    (stack_bottom, stack_top)
+}
+
+/// Initializes interrupt-stack watermarks before other cores enable interrupts.
 pub fn initialise_interrupt_stack_tracking() {
-    let bottom = &raw const __interrupt_stacks_bottom as usize;
-    let top = &raw const __interrupt_stacks_top as usize;
-
-    let stride = (top - bottom) / CORE_MAXIMUM;
-    let stack_size = stride - 4096;
-
     for core_index in 0..CORE_MAXIMUM {
-        let stack_bottom = bottom + core_index * stride + 4096;
+        let (stack_bottom, stack_top) = interrupt_stack_bounds(core_index);
 
+        // SAFETY: Only mapped, inactive interrupt-stack memory is initialized.
         unsafe {
-            core::ptr::write_bytes(stack_bottom as *mut u8, STACK_PATTERN, stack_size);
+            core::ptr::write_bytes(
+                stack_bottom as *mut u8,
+                INTERRUPT_STACK_PATTERN,
+                stack_top - stack_bottom,
+            );
         }
     }
 }
 
-/// Returns the estimated maximum interrupt-stack usage and capacity for one core.
-///
-/// Scans upward from the bottom of the stack until the first byte that no
-/// longer matches the initialization pattern. Since stacks grow downward,
-/// this estimates the deepest stack usage observed since initialization.
-///
-/// The measurement is approximate because written bytes may coincidentally
-/// match the pattern. It must not be used as a memory-safety guarantee.
+/// Estimates the maximum interrupt-stack consumption since initialization.
+#[must_use]
 pub fn interrupt_stack_high_water_bytes(core_index: usize) -> (usize, usize) {
-    assert!(core_index < CORE_MAXIMUM);
-
-    let bottom = &raw const __interrupt_stacks_bottom as usize;
-    let top = &raw const __interrupt_stacks_top as usize;
-
-    let stride = (top - bottom) / CORE_MAXIMUM;
-
-    let stack_size = stride - 4096;
-    let stack_bottom = bottom + core_index * stride + 4096;
-    let stack_top = stack_bottom + stack_size;
-
+    let (stack_bottom, stack_top) = interrupt_stack_bounds(core_index);
     let mut cursor = stack_bottom;
 
-    // Read the pattern without allowing the compiler to eliminate or
-    // combine accesses to the stack memory being inspected.
     while cursor < stack_top {
-        // SAFETY: The cursor remains inside the linker-reserved
-        // interrupt-stack region for the specified core.
-        let byte = unsafe { core::ptr::read_volatile(cursor as *const u8) };
-
-        if byte != STACK_PATTERN {
+        // SAFETY: The cursor stays inside the mapped interrupt-stack region.
+        let value = unsafe { core::ptr::read_volatile(cursor as *const u8) };
+        if value != INTERRUPT_STACK_PATTERN {
             break;
         }
-
         cursor += 1;
     }
 
-    (stack_top - cursor, stack_size)
+    (stack_top - cursor, stack_top - stack_bottom)
 }
 
-/// Storage for all per-core idle stacks, aligned to 16 bytes.
-#[repr(C, align(16))]
-struct IdleStackArea(UnsafeCell<[u8; CORE_MAXIMUM * IDLE_STACK_BYTE_COUNT]>);
+// Returns the exclusive upper boundary of the linker-reserved idle stack.
+fn idle_stack_top(core_index: usize) -> usize {
+    assert!(core_index < CORE_MAXIMUM);
 
-// SAFETY: Each core uses only its own idle stack, and only after `install_idle_frames`.
-unsafe impl Sync for IdleStackArea {}
+    let region_bottom = &raw const __idle_stacks_bottom as usize;
+    let region_top = &raw const __idle_stacks_top as usize;
 
-/// Dedicated idle-stack storage shared across cores without overlapping slices.
-static IDLE_STACKS: IdleStackArea =
-    IdleStackArea(UnsafeCell::new([0; CORE_MAXIMUM * IDLE_STACK_BYTE_COUNT]));
+    assert_eq!(region_bottom % PAGE_BYTE_COUNT, 0);
+    assert_eq!(
+        region_top.checked_sub(region_bottom),
+        Some(CORE_MAXIMUM * IDLE_STACK_STRIDE_BYTE_COUNT),
+        "Invalid idle-stack region"
+    );
 
-/// Parks the current core until an event arrives.
-///
-/// This function never returns. The scheduler may interrupt the idle context
-/// and resume another actor through the exception-return mechanism.
+    region_bottom + (core_index + 1) * IDLE_STACK_STRIDE_BYTE_COUNT
+}
+
+// Waits for an event without consuming CPU time in a busy loop.
 extern "C" fn idle_loop() -> ! {
     loop {
         processor::wait_for_event();
     }
 }
 
-/// Returns the exclusive upper boundary of the specified core's idle stack.
-fn idle_stack_top(core_index: usize) -> usize {
-    let base = IDLE_STACKS.0.get() as usize;
-    base + (core_index + 1) * IDLE_STACK_BYTE_COUNT
-}
-
-/// Writes an idle trap frame for every core and records it on that core's local data.
-///
-/// Call once on the boot core before secondary cores start taking ticks. Each secondary
-/// core already has its `CoreLocal`; only the frame address is stored.
+/// Prepares one independently guarded idle trap frame for each execution core.
 pub fn install_idle_frames() {
+    assert!(size_of::<TrapFrame>() <= IDLE_STACK_BYTE_COUNT);
+
     for core_local in core_locals() {
         let core_index = core_local.core_index();
         let frame_address = idle_stack_top(core_index) - size_of::<TrapFrame>();
+        assert_eq!(frame_address % align_of::<TrapFrame>(), 0);
 
         let frame = TrapFrame {
             general_registers: [0; 31],
@@ -130,8 +128,7 @@ pub fn install_idle_frames() {
             _padding: 0,
         };
 
-        // SAFETY: This core's idle stack is unused until the first schedule into idle.
-        // The top is 16-byte aligned and the frame size is a multiple of 16.
+        // SAFETY: Boot installs these frames before idle contexts can run.
         unsafe {
             core::ptr::write(frame_address as *mut TrapFrame, frame);
         }

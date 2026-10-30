@@ -15,5 +15,8 @@ bench = false
 [dependencies]
 foundation.workspace = true
 
+[features]
+guard-page-fault-test = []
+
 [lints]
 workspace = true

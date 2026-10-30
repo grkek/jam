@@ -34,6 +34,12 @@ use crate::{
     },
 };
 
+/// Pattern used to estimate maximum reclamation-stack usage.
+const RECLAMATION_STACK_PATTERN: u8 = 0xA5;
+
+/// Size of the unmapped guard beneath each reclamation stack.
+const RECLAMATION_GUARD_BYTE_COUNT: usize = 4096;
+
 unsafe extern "C" {
     static __reclamation_stacks_bottom: u8;
     static __reclamation_stacks_top: u8;
@@ -93,6 +99,65 @@ fn reclaim_on_dedicated_stack(address: LocalAddress, core_index: usize) {
             &address as *const LocalAddress as usize,
         );
     }
+}
+
+/// Initializes unused reclamation-stack memory for watermark tracking.
+///
+/// Call once after the guarded kernel mappings are active and before
+/// any actor can execute reclamation.
+pub fn initialise_reclamation_stack_tracking() {
+    let bottom = &raw const __reclamation_stacks_bottom as usize;
+    let top = &raw const __reclamation_stacks_top as usize;
+
+    assert!(top > bottom);
+    assert_eq!((top - bottom) % CORE_MAXIMUM, 0);
+
+    let stride = (top - bottom) / CORE_MAXIMUM;
+    assert!(stride > RECLAMATION_GUARD_BYTE_COUNT);
+
+    for core_index in 0..CORE_MAXIMUM {
+        let stack_bottom = bottom + core_index * stride + RECLAMATION_GUARD_BYTE_COUNT;
+
+        // SAFETY: These usable stacks are linker-reserved, mapped writable,
+        // and not yet in use. Their guard pages are intentionally excluded.
+        unsafe {
+            core::ptr::write_bytes(
+                stack_bottom as *mut u8,
+                RECLAMATION_STACK_PATTERN,
+                stride - RECLAMATION_GUARD_BYTE_COUNT,
+            );
+        }
+    }
+}
+
+/// Returns the approximate peak reclamation-stack usage and usable capacity.
+///
+/// Call only after reclamation has returned on the measured core.
+pub fn reclamation_stack_high_water_bytes(core_index: usize) -> (usize, usize) {
+    assert!(core_index < CORE_MAXIMUM);
+
+    let bottom = &raw const __reclamation_stacks_bottom as usize;
+    let top = &raw const __reclamation_stacks_top as usize;
+
+    let stride = (top - bottom) / CORE_MAXIMUM;
+    let capacity = stride - RECLAMATION_GUARD_BYTE_COUNT;
+    let stack_bottom = bottom + core_index * stride + RECLAMATION_GUARD_BYTE_COUNT;
+    let stack_top = stack_bottom + capacity;
+
+    let mut cursor = stack_bottom;
+
+    while cursor < stack_top {
+        // SAFETY: The cursor remains within this core's mapped stack.
+        let value = unsafe { core::ptr::read_volatile(cursor as *const u8) };
+
+        if value != RECLAMATION_STACK_PATTERN {
+            break;
+        }
+
+        cursor += 1;
+    }
+
+    (stack_top - cursor, capacity)
 }
 
 /// Reclaims the finishing actor's messages and, if safe, its address space and slot.
@@ -268,6 +333,10 @@ pub fn end_current_actor(cause: Cause) -> Option<usize> {
     core_local.set_current_slot_index(NO_ACTOR);
 
     reclaim_on_dedicated_stack(address, core_index);
+    if address.generation_counter() == 1 {
+        let (_used, _capacity) = reclamation_stack_high_water_bytes(core_index);
+    }
+
     let next = pick_next_after_finish(core_local);
     Some(next)
 }

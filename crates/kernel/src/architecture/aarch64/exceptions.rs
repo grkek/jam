@@ -5,7 +5,7 @@
 
 use core::fmt::Write;
 
-use foundation::cause::Cause;
+use foundation::{address::LocalAddress, cause::Cause, system_call_status::SystemCallStatus};
 
 use super::{early_console::EarlyConsole, interrupts::handle_interrupt};
 use crate::{
@@ -13,7 +13,7 @@ use crate::{
     architecture::aarch64::power_interface,
     error,
     scheduling::core_local::{NO_ACTOR, current_core_local},
-    system_calls::dispatcher,
+    system_calls::{actor_calls::current_address, dispatcher},
 };
 
 core::arch::global_asm!(include_str!("exception_vectors.s"));
@@ -188,28 +188,35 @@ pub extern "C" fn exception_handler(trap_frame: *mut TrapFrame) -> *mut TrapFram
 }
 
 /// Reports a fault taken at EL0 and ends the actor that caused it.
+/// Reports a fault taken at EL0 and ends the actor that caused it.
 fn end_faulting_actor(frame: &TrapFrame, exception_class: u64) -> *mut TrapFrame {
-    let _ = writeln!(
-        EarlyConsole,
-        "Actor fault: {} (ESR_EL1 {:#x}, FAR_EL1 {:#x}, ELR_EL1 {:#x})",
-        exception_class_name(exception_class),
-        frame.exception_syndrome_register,
-        frame.fault_address_register,
-        frame.exception_link_register
-    );
-
     let core = crate::scheduling::core_local::current_core_local()
-        .map(|c| c.core_index())
+        .map(|core_local| core_local.core_index())
         .unwrap_or(usize::MAX);
 
-    let _ = writeln!(
-        EarlyConsole,
-        "Actor fault on core {core}: {} (ESR_EL1 {:#x}, FAR_EL1 {:#x}, ELR_EL1 {:#x})",
-        exception_class_name(exception_class),
-        frame.exception_syndrome_register,
-        frame.fault_address_register,
-        frame.exception_link_register
-    );
+    let (status, packed_address) = current_address();
+
+    if status == SystemCallStatus::Accepted {
+        let address = LocalAddress::new(packed_address as u32, (packed_address >> 32) as u32);
+
+        let _ = error!(
+            EarlyConsole,
+            "Actor {address} fault on core {core}: {} (ESR_EL1 {:#x}, FAR_EL1 {:#x}, ELR_EL1 {:#x})",
+            exception_class_name(exception_class),
+            frame.exception_syndrome_register,
+            frame.fault_address_register,
+            frame.exception_link_register
+        );
+    } else {
+        let _ = error!(
+            EarlyConsole,
+            "Unknown actor fault on core {core}: {} (ESR_EL1 {:#x}, FAR_EL1 {:#x}, ELR_EL1 {:#x})",
+            exception_class_name(exception_class),
+            frame.exception_syndrome_register,
+            frame.fault_address_register,
+            frame.exception_link_register
+        );
+    }
 
     match lifecycle::end_current_actor(Cause::Faulted) {
         Some(next_frame) => next_frame as *mut TrapFrame,

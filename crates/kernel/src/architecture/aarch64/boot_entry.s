@@ -156,7 +156,7 @@ secondary_high_entry:
 	// Stack for this core: the top of stack slice number (index + 1).
 	adrp	x1, __boot_stacks_bottom
 	add	x1, x1, :lo12:__boot_stacks_bottom
-	ldr	x2, =__boot_stack_size
+	ldr x2, =__boot_stack_stride
 	add	x3, x20, #1
 	madd	x1, x3, x2, x1
 	mov	sp, x1

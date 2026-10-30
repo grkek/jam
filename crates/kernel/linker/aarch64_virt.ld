@@ -9,22 +9,32 @@
 
 ENTRY(_start)
 
-KERNEL_PHYSICAL_BASE = 0x40200000;
-KERNEL_OFFSET        = 0xFFFFFF8000000000;
-PAGE_SIZE            = 4096;
-CORE_COUNT           = 8;
-BOOT_STACK_SIZE      = 16384;
-INTERRUPT_STACK_SIZE = 65536;
+KERNEL_PHYSICAL_BASE     = 0x40200000;
+KERNEL_OFFSET            = 0xFFFFFF8000000000;
 
-INTERRUPT_GUARD_SIZE = 4096;
-INTERRUPT_STACK_STRIDE = INTERRUPT_STACK_SIZE + INTERRUPT_GUARD_SIZE;
-RECLAMATION_STACK_SIZE = 65536;
+PAGE_SIZE                = 4096;
+CORE_COUNT               = 8;
+
+BOOT_STACK_SIZE          = 16384;
+BOOT_GUARD_SIZE          = PAGE_SIZE;
+BOOT_STACK_STRIDE        = BOOT_STACK_SIZE + BOOT_GUARD_SIZE;
+
+IDLE_STACK_SIZE          = 8192;
+IDLE_GUARD_SIZE          = PAGE_SIZE;
+IDLE_STACK_STRIDE        = IDLE_STACK_SIZE + IDLE_GUARD_SIZE;
+
+INTERRUPT_STACK_SIZE     = 65536;
+INTERRUPT_GUARD_SIZE     = 4096;
+INTERRUPT_STACK_STRIDE   = INTERRUPT_STACK_SIZE + INTERRUPT_GUARD_SIZE;
+
+RECLAMATION_STACK_SIZE   = 65536;
 RECLAMATION_STACK_STRIDE = RECLAMATION_STACK_SIZE + INTERRUPT_GUARD_SIZE;
 
 __interrupt_stack_stride = INTERRUPT_STACK_STRIDE;
 
-__boot_stack_size      = BOOT_STACK_SIZE;
-__interrupt_stack_size = INTERRUPT_STACK_SIZE;
+__boot_stack_size        = BOOT_STACK_SIZE;
+__boot_stack_stride      = BOOT_STACK_STRIDE;
+__interrupt_stack_size   = INTERRUPT_STACK_SIZE;
 
 SECTIONS
 {
@@ -73,9 +83,15 @@ SECTIONS
 
     .boot_stacks (NOLOAD) : ALIGN(PAGE_SIZE) {
         __boot_stacks_bottom = .;
-        __boot_stack_core_zero_top = . + BOOT_STACK_SIZE;
-        . += CORE_COUNT * BOOT_STACK_SIZE;
+        __boot_stack_core_zero_top = . + BOOT_STACK_STRIDE;
+        . += CORE_COUNT * BOOT_STACK_STRIDE;
         __boot_stacks_top = .;
+    }
+
+    .idle_stacks (NOLOAD) : ALIGN(PAGE_SIZE) {
+        __idle_stacks_bottom = .;
+        . += CORE_COUNT * IDLE_STACK_STRIDE;
+        __idle_stacks_top = .;
     }
 
     .interrupt_stacks (NOLOAD) : ALIGN(PAGE_SIZE) {

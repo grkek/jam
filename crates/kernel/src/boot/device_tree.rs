@@ -1,6 +1,7 @@
 //! Finds and reads the device tree handed over at boot.
 
 use foundation::device_tree::{DeviceTreeError, DeviceTreeSummary, parse_device_tree};
+use foundation::hardware_description::{DiscoveryError, HardwareDescription, discover_hardware};
 
 use crate::memory::{
     address_translation::virtual_to_physical, device_tree_blob::device_tree_blob_at,
@@ -15,8 +16,12 @@ pub struct LoadedDeviceTree {
     /// The physical address where the blob was actually found, which may differ from the
     /// address handed over.
     pub blob_address: usize,
+    /// Exact number of firmware device-tree bytes to keep out of the frame allocator.
+    pub blob_byte_count: usize,
     /// The facts the kernel needs from it.
     pub summary: DeviceTreeSummary,
+    /// Additional memory reservations and CPU affinities; informational until Phase 3.
+    pub hardware_description: Result<HardwareDescription, DiscoveryError>,
 }
 
 /// Why the device tree could not be used.
@@ -42,8 +47,12 @@ pub fn load_device_tree(
         .or_else(|| device_tree_blob_at(QEMU_VIRT_RAM_BASE_ADDRESS))
         .ok_or(DeviceTreeLoadError::NotFound)?;
     let summary = parse_device_tree(blob).map_err(DeviceTreeLoadError::Invalid)?;
+    // A discovery error is reported by the boot core but cannot alter Phase 1 boot behavior.
+    let hardware_description = discover_hardware(blob);
     Ok(LoadedDeviceTree {
         blob_address: virtual_to_physical(blob.as_ptr() as usize),
+        blob_byte_count: blob.len(),
         summary,
+        hardware_description,
     })
 }
