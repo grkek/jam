@@ -404,6 +404,36 @@ fn read_firmware_reservations(
     }
 }
 
+/// Kind of top-level `DeviceTree` node currently being visited.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ParentNodeKind {
+    #[default]
+    Other,
+    Memory,
+    CentralProcessingUnits,
+    ReservedMemory,
+}
+
+/// Kind of child node currently being visited.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ChildNodeKind {
+    #[default]
+    Other,
+    CentralProcessingUnit,
+    Reservation,
+}
+
+/// Properties collected from the current reserved-memory child.
+#[derive(Clone, Copy, Debug, Default)]
+struct ReservationAttributes {
+    /// Whether the child declares a static physical region.
+    has_register_property: bool,
+    /// Whether the child requests dynamic memory allocation.
+    has_size_property: bool,
+    /// Whether the child prohibits ordinary memory mappings.
+    no_map: bool,
+}
+
 /// Mutable parser state for the root, CPU, RAM, and reserved-memory node levels.
 ///
 /// Only the first three levels matter. Deeper subtrees are traversed but ignored,
@@ -423,28 +453,18 @@ struct StructureWalker {
     reserved_size_cells: usize,
     /// Current FDT node nesting depth.
     depth: usize,
-    /// Whether the open top-level node describes physical RAM.
-    parent_is_memory: bool,
-    /// Whether the open top-level node describes CPUs.
-    parent_is_cpus: bool,
-    /// Whether the open top-level node describes reservations.
-    parent_is_reserved: bool,
-    /// Whether the current depth-three node is a CPU.
-    inside_cpu_node: bool,
-    /// Whether the current depth-three node is a reserved-memory child.
-    inside_reservation_node: bool,
     /// Hardware affinity identifier of the current CPU node.
     cpu_identifier: Option<u64>,
     /// Whether the current CPU node has status `disabled`.
     cpu_disabled: bool,
     /// First reservation inserted by the current reserved-memory child.
     reservation_start_index: usize,
-    /// Whether the current reserved-memory child has a static `reg` property.
-    reservation_has_reg: bool,
-    /// Whether the current reserved-memory child requests dynamic allocation.
-    reservation_has_size: bool,
-    /// Whether the current reservation must not be included in normal mappings.
-    reservation_no_map: bool,
+    /// Current top-level node category.
+    parent_node_kind: ParentNodeKind,
+    /// Current child node category.
+    child_node_kind: ChildNodeKind,
+    /// Properties of the current reserved-memory child.
+    reservation_attributes: ReservationAttributes,
 }
 
 impl StructureWalker {
@@ -458,41 +478,49 @@ impl StructureWalker {
             reserved_address_cells: DEFAULT_ROOT_ADDRESS_CELLS,
             reserved_size_cells: DEFAULT_ROOT_SIZE_CELLS,
             depth: 0,
-            parent_is_memory: false,
-            parent_is_cpus: false,
-            parent_is_reserved: false,
-            inside_cpu_node: false,
-            inside_reservation_node: false,
+            parent_node_kind: ParentNodeKind::Other,
+            child_node_kind: ChildNodeKind::Other,
+            reservation_attributes: ReservationAttributes::default(),
             cpu_identifier: None,
             cpu_disabled: false,
             reservation_start_index: 0,
-            reservation_has_reg: false,
-            reservation_has_size: false,
-            reservation_no_map: false,
         }
     }
 
     /// Opens a node, resetting state only at the relevant tree depth.
     fn begin_node(&mut self, name: &[u8]) -> Result<(), DiscoveryError> {
         self.depth = self.depth.checked_add(1).ok_or(DiscoveryError::Malformed)?;
+
         if self.depth == 2 {
-            self.parent_is_memory = memory_node(name);
-            self.parent_is_cpus = name == b"cpus";
-            self.parent_is_reserved = name == b"reserved-memory";
-            if self.parent_is_reserved {
+            self.parent_node_kind = if memory_node(name) {
+                ParentNodeKind::Memory
+            } else if name == b"cpus" {
+                ParentNodeKind::CentralProcessingUnits
+            } else if name == b"reserved-memory" {
+                ParentNodeKind::ReservedMemory
+            } else {
+                ParentNodeKind::Other
+            };
+
+            if self.parent_node_kind == ParentNodeKind::ReservedMemory {
                 self.reserved_address_cells = self.root_address_cells;
                 self.reserved_size_cells = self.root_size_cells;
             }
         } else if self.depth == 3 {
-            self.inside_cpu_node = self.parent_is_cpus && cpu_node(name);
-            self.inside_reservation_node = self.parent_is_reserved;
+            self.child_node_kind = match self.parent_node_kind {
+                ParentNodeKind::CentralProcessingUnits if cpu_node(name) => {
+                    ChildNodeKind::CentralProcessingUnit
+                }
+                ParentNodeKind::ReservedMemory => ChildNodeKind::Reservation,
+                _ => ChildNodeKind::Other,
+            };
+
             self.cpu_identifier = None;
             self.cpu_disabled = false;
             self.reservation_start_index = self.description.reserved_region_count;
-            self.reservation_has_reg = false;
-            self.reservation_has_size = false;
-            self.reservation_no_map = false;
+            self.reservation_attributes = ReservationAttributes::default();
         }
+
         Ok(())
     }
 
@@ -501,100 +529,125 @@ impl StructureWalker {
         if self.depth == 0 {
             return Err(DiscoveryError::Malformed);
         }
+
         if self.depth == 3 {
-            if self.inside_cpu_node && !self.cpu_disabled {
+            if self.child_node_kind == ChildNodeKind::CentralProcessingUnit && !self.cpu_disabled {
                 self.description
                     .push_cpu(self.cpu_identifier.ok_or(DiscoveryError::Malformed)?)?;
             }
-            if self.inside_reservation_node {
-                if self.reservation_has_size && !self.reservation_has_reg {
-                    self.description.dynamic_reservation_count += 1;
+
+            if self.child_node_kind == ChildNodeKind::Reservation {
+                if self.reservation_attributes.has_size_property
+                    && !self.reservation_attributes.has_register_property
+                {
+                    self.description.dynamic_reservation_count = self
+                        .description
+                        .dynamic_reservation_count
+                        .checked_add(1)
+                        .ok_or(DiscoveryError::Malformed)?;
                 }
-                // SAFETY INVARIANT: The start index was captured when this child opened.
-                // Checked slicing ensures malformed counts fail rather than rewrite firmware entries.
+
+                // The start index was captured when this reservation child opened.
+                // Checked slicing prevents malformed indices from modifying unrelated entries.
                 let reservations = self
                     .description
                     .reserved_regions
                     .get_mut(self.reservation_start_index..self.description.reserved_region_count)
                     .ok_or(DiscoveryError::Malformed)?;
+
                 for reservation in reservations {
                     reservation.source = ReservationSource::DeviceTree {
-                        no_map: self.reservation_no_map,
+                        no_map: self.reservation_attributes.no_map,
                     };
                 }
             }
-            self.inside_cpu_node = false;
-            self.inside_reservation_node = false;
+
+            self.child_node_kind = ChildNodeKind::Other;
         } else if self.depth == 2 {
-            self.parent_is_memory = false;
-            self.parent_is_cpus = false;
-            self.parent_is_reserved = false;
+            self.parent_node_kind = ParentNodeKind::Other;
         }
+
         self.depth -= 1;
+
         Ok(())
     }
 
     /// Handles properties of RAM, CPUs, and reserved-memory children.
     fn property(&mut self, name: &[u8], data: &[u8]) -> Result<(), DiscoveryError> {
-        if self.depth == 1 {
-            if name == b"#address-cells" {
-                self.root_address_cells = cell_count(data)?;
-            } else if name == b"#size-cells" {
-                self.root_size_cells = cell_count(data)?;
-            }
-        } else if self.depth == 2 {
-            if self.parent_is_memory && name == b"reg" {
-                visit_regions(
-                    data,
-                    self.root_address_cells,
-                    self.root_size_cells,
-                    |region| self.description.push_memory(region),
-                )?;
-            } else if self.parent_is_cpus && name == b"#address-cells" {
-                self.cpu_address_cells = cell_count(data)?;
-            } else if self.parent_is_reserved {
+        match self.depth {
+            1 => {
                 if name == b"#address-cells" {
-                    self.reserved_address_cells = cell_count(data)?;
+                    self.root_address_cells = cell_count(data)?;
                 } else if name == b"#size-cells" {
-                    self.reserved_size_cells = cell_count(data)?;
-                } else if name == b"ranges" && !data.is_empty() {
-                    return Err(DiscoveryError::UnsupportedReservationTranslation);
+                    self.root_size_cells = cell_count(data)?;
                 }
             }
-        } else if self.depth == 3 {
-            self.child_property(name, data)?;
+            2 => match self.parent_node_kind {
+                ParentNodeKind::Memory if name == b"reg" => {
+                    visit_regions(
+                        data,
+                        self.root_address_cells,
+                        self.root_size_cells,
+                        |region| self.description.push_memory(region),
+                    )?;
+                }
+                ParentNodeKind::CentralProcessingUnits if name == b"#address-cells" => {
+                    self.cpu_address_cells = cell_count(data)?;
+                }
+                ParentNodeKind::ReservedMemory => {
+                    if name == b"#address-cells" {
+                        self.reserved_address_cells = cell_count(data)?;
+                    } else if name == b"#size-cells" {
+                        self.reserved_size_cells = cell_count(data)?;
+                    } else if name == b"ranges" && !data.is_empty() {
+                        return Err(DiscoveryError::UnsupportedReservationTranslation);
+                    }
+                }
+                _ => {}
+            },
+            3 => {
+                self.child_property(name, data)?;
+            }
+            _ => {}
         }
+
         Ok(())
     }
 
     /// Handles a CPU or static/dynamic reserved-memory child property.
     fn child_property(&mut self, name: &[u8], data: &[u8]) -> Result<(), DiscoveryError> {
-        if self.inside_cpu_node {
-            if name == b"reg" {
-                self.cpu_identifier = Some(read_cells(data, self.cpu_address_cells)?);
-            } else if name == b"status" {
-                self.cpu_disabled = data.starts_with(b"disabled\0");
+        match self.child_node_kind {
+            ChildNodeKind::CentralProcessingUnit => {
+                if name == b"reg" {
+                    self.cpu_identifier = Some(read_cells(data, self.cpu_address_cells)?);
+                } else if name == b"status" {
+                    self.cpu_disabled = data.starts_with(b"disabled\0");
+                }
             }
-        } else if self.inside_reservation_node {
-            if name == b"reg" {
-                self.reservation_has_reg = true;
-                visit_regions(
-                    data,
-                    self.reserved_address_cells,
-                    self.reserved_size_cells,
-                    |region| {
-                        self.description.push_reserved(ReservedRegion {
-                            region,
-                            source: ReservationSource::DeviceTree { no_map: false },
-                        })
-                    },
-                )?;
-            } else if name == b"size" {
-                self.reservation_has_size = true;
-            } else if name == b"no-map" {
-                self.reservation_no_map = true;
+            ChildNodeKind::Reservation => {
+                if name == b"reg" {
+                    visit_regions(
+                        data,
+                        self.reserved_address_cells,
+                        self.reserved_size_cells,
+                        |region| {
+                            self.description.push_reserved(ReservedRegion {
+                                region,
+                                source: ReservationSource::DeviceTree { no_map: false },
+                            })
+                        },
+                    )?;
+
+                    self.reservation_attributes.has_register_property = true;
+                } else if name == b"size" {
+                    self.reservation_attributes.has_size_property = true;
+                } else if name == b"no-map" {
+                    self.reservation_attributes.no_map = true;
+                }
             }
+            ChildNodeKind::Other => {}
         }
+
         Ok(())
     }
 
@@ -743,9 +796,11 @@ mod tests {
         /// Produces a complete device-tree blob with a terminated reservation table.
         fn build(mut self) -> Vec<u8> {
             self.word(END);
-            let reservation_offset = u32::try_from(HEADER_BYTE_COUNT);
-            let structure_offset =
-                reservation_offset + u32::try_from((self.reservations.len() + 1) * 16).unwrap();
+            let reservation_offset =
+                u32::try_from(HEADER_BYTE_COUNT).expect("Header size exceeds u32");
+            let reservation_byte_count = (self.reservations.len() + 1) * 16;
+            let structure_offset = reservation_offset
+                + u32::try_from(reservation_byte_count).expect("Reservation size exceeds u32");
             let string_offset = structure_offset + u32::try_from(self.structure.len()).unwrap();
             let total_size = string_offset + u32::try_from(self.strings.len()).unwrap();
             let fields = [

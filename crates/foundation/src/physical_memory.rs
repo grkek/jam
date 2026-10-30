@@ -35,8 +35,8 @@ pub enum PhysicalMemoryError {
     KernelOutsideManagedBank,
     /// A dynamic reservation request has not been satisfied by firmware or JAM.
     UnresolvedDynamicReservation,
-    /// A `no-map` reservation intersects a region the temporary boot tables already map.
-    UnsupportedNoMapReservation,
+    /// A `no-map` reservation shares a physical frame with the firmware device tree.
+    NoMapOverlapsDeviceTree,
     /// There is insufficient space for the frame bitmap outside protected memory.
     BitmapStorageUnavailable,
     /// A length or address computation would overflow.
@@ -72,6 +72,38 @@ fn regions_overlap(left: PhysicalRegion, right: PhysicalRegion) -> bool {
     left.start_address < right.end_address() && right.start_address < left.end_address()
 }
 
+/// Returns whether two physical regions touch the same 4 KiB frame.
+///
+/// The caller must first validate both regions with [`PhysicalRegion::new`].
+/// Two different byte intervals may share a frame, and in that case one cannot
+/// safely be mapped while the other is excluded from the direct map.
+fn regions_share_frame(left: PhysicalRegion, right: PhysicalRegion) -> bool {
+    let left_first_frame = left.start_address / PHYSICAL_FRAME_BYTE_COUNT;
+    let left_last_frame = (left.end_address() - 1) / PHYSICAL_FRAME_BYTE_COUNT;
+    let right_first_frame = right.start_address / PHYSICAL_FRAME_BYTE_COUNT;
+    let right_last_frame = (right.end_address() - 1) / PHYSICAL_FRAME_BYTE_COUNT;
+
+    left_first_frame <= right_last_frame && right_first_frame <= left_last_frame
+}
+
+/// Checks whether a physical region intersects any firmware `no-map` reservation.
+///
+/// This checks byte-level overlap. The caller must supply regions previously
+/// validated with [`PhysicalRegion::new`]. The strict kernel mapping layer can
+/// use this check on individual 4 KiB pages to omit every touched page.
+#[must_use]
+pub fn region_intersects_no_map_reservation(
+    physical_region: PhysicalRegion,
+    reservations: &[ReservedRegion],
+) -> bool {
+    reservations.iter().any(|reservation| {
+        matches!(
+            reservation.source,
+            ReservationSource::DeviceTree { no_map: true }
+        ) && regions_overlap(physical_region, reservation.region)
+    })
+}
+
 /// Collects immutable reservations and boot allocations before placing the bitmap.
 ///
 /// Checked writes enforce the fixed array capacity even when a caller supplies
@@ -95,6 +127,7 @@ fn collect_protected_regions(
         *destination = reservation.region;
         protected_region_count += 1;
     }
+
     // Protect every page before the end of the loaded kernel, including boot-time tables.
     let kernel_region = protected_regions
         .get_mut(protected_region_count)
@@ -104,6 +137,7 @@ fn collect_protected_regions(
         byte_count: kernel_end - managed_bank.start_address,
     };
     protected_region_count += 1;
+
     let device_tree_destination = protected_regions
         .get_mut(protected_region_count)
         .ok_or(PhysicalMemoryError::TooManyReservations)?;
@@ -156,11 +190,14 @@ impl PhysicalMemoryPlan {
     /// `managed_bank` must match one complete discovered RAM bank. Extra banks are validated
     /// but remain unavailable until the kernel maps them. The bitmap is placed at the first
     /// suitable page boundary after the kernel image, skipping the DTB and reservations.
+    /// Static `no-map` reservations are excluded from allocation; the strict kernel mapper
+    /// must separately omit them from its page tables before switching translation roots.
     ///
     /// # Errors
     ///
-    /// Returns an explicit error instead of making any RAM available when the discovery is
-    /// inconsistent, a reservation cannot be honored, or the bitmap has no safe location.
+    /// Returns an explicit error instead of making any RAM available when discovery is
+    /// inconsistent, a reservation cannot be honored, the device tree shares a `no-map`
+    /// frame, or bitmap space runs out. Dynamic reservations remain unsupported.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         managed_bank: PhysicalRegion,
@@ -236,15 +273,20 @@ impl PhysicalMemoryPlan {
             {
                 return Err(PhysicalMemoryError::AddressOverflow);
             }
-            if matches!(
+        }
+
+        // The blob must remain accessible after the strict kernel mapping is installed.
+        // Reject a shared frame even when the byte intervals do not overlap, because
+        // `no-map` regions are excluded at 4 KiB page granularity.
+        if reservations.iter().any(|reservation| {
+            matches!(
                 reservation.source,
                 ReservationSource::DeviceTree { no_map: true }
-            ) && regions_overlap(reservation.region, bootstrap_mapped_ram)
-            {
-                // The strict kernel direct map does not yet omit these mappings.
-                return Err(PhysicalMemoryError::UnsupportedNoMapReservation);
-            }
+            ) && regions_share_frame(device_tree_region, reservation.region)
+        }) {
+            return Err(PhysicalMemoryError::NoMapOverlapsDeviceTree);
         }
+
         let bitmap_storage_bytes = align_up(bitmap_storage_byte_count, PHYSICAL_FRAME_BYTE_COUNT)
             .ok_or(PhysicalMemoryError::AddressOverflow)?;
         if bitmap_storage_bytes == 0 {
@@ -341,14 +383,14 @@ mod tests {
     use super::*;
 
     /// Creates a checked RAM or reserved physical extent.
-    fn region(start: u64, len: u64) -> PhysicalRegion {
-        PhysicalRegion::new(start, len).unwrap()
+    fn region(start_address: u64, byte_count: u64) -> PhysicalRegion {
+        PhysicalRegion::new(start_address, byte_count).unwrap()
     }
 
     /// Creates a firmware reservation for testing.
-    fn reserved(start: u64, len: u64) -> ReservedRegion {
+    fn reserved(start_address: u64, byte_count: u64) -> ReservedRegion {
         ReservedRegion {
-            region: region(start, len),
+            region: region(start_address, byte_count),
             source: ReservationSource::Firmware,
         }
     }
@@ -361,7 +403,7 @@ mod tests {
     /// Plans an allocator across one 512 MiB boot-mapped bank.
     fn plan(
         reservations: &[ReservedRegion],
-        dtb: PhysicalRegion,
+        device_tree_region: PhysicalRegion,
     ) -> Result<PhysicalMemoryPlan, PhysicalMemoryError> {
         let banks = [
             region(0x4000_0000, 0x2000_0000),
@@ -374,7 +416,7 @@ mod tests {
             reservations,
             0,
             0x4024_0000,
-            dtb,
+            device_tree_region,
             8192,
         )
     }
@@ -382,35 +424,42 @@ mod tests {
     /// Firmware reservations and firmware DTBs are never allocatable, including partial pages.
     #[test]
     fn reserves_firmware_and_device_tree_pages() {
-        let p = plan(&[reserved(0x4100_0001, 2)], region(0x4000_0000, 1200)).unwrap();
-        assert!(p.is_protected_frame(0x4100_0000));
-        assert!(p.is_protected_frame(0x4000_0000));
-        assert!(p.is_protected_frame(0x4023_f000));
-        assert!(!p.is_protected_frame(0x4110_0000));
+        let physical_memory_plan =
+            plan(&[reserved(0x4100_0001, 2)], region(0x4000_0000, 1200)).unwrap();
+        assert!(physical_memory_plan.is_protected_frame(0x4100_0000));
+        assert!(physical_memory_plan.is_protected_frame(0x4000_0000));
+        assert!(physical_memory_plan.is_protected_frame(0x4023_f000));
+        assert!(!physical_memory_plan.is_protected_frame(0x4110_0000));
         assert_eq!(
-            p.protected_frame_interval(region(0x4100_0001, 2)),
+            physical_memory_plan.protected_frame_interval(region(0x4100_0001, 2)),
             Some((0x1000, 1))
         );
     }
 
     /// Bitmap storage moves past reservations instead of zeroing them.
     #[test]
-    fn bitmap_skips_reserved_or_dtb_memory() {
-        let p = plan(
+    fn bitmap_skips_reserved_or_device_tree_memory() {
+        let physical_memory_plan = plan(
             &[reserved(0x4024_0000, 0x4000)],
             region(0x4028_0000, 0x1000),
         )
         .unwrap();
-        assert_eq!(p.bitmap_storage().start_address, 0x4024_4000); // after the firmware reservation
+        assert_eq!(
+            physical_memory_plan.bitmap_storage().start_address,
+            0x4024_4000
+        );
     }
 
     /// A second RAM bank is recognized but not handed to the unmapped bootstrap allocator.
     #[test]
     fn additional_banks_are_validated_but_not_allocated() {
-        let p = plan(&[], region(0x4000_0000, 0x1000)).unwrap();
-        assert_eq!(p.managed_bank(), region(0x4000_0000, 0x2000_0000));
+        let physical_memory_plan = plan(&[], region(0x4000_0000, 0x1000)).unwrap();
         assert_eq!(
-            p.protected_frame_interval(region(0x1_0000_0000, 0x1000)),
+            physical_memory_plan.managed_bank(),
+            region(0x4000_0000, 0x2000_0000)
+        );
+        assert_eq!(
+            physical_memory_plan.protected_frame_interval(region(0x1_0000_0000, 0x1000)),
             None
         );
     }
@@ -420,35 +469,37 @@ mod tests {
     fn bitmap_never_allocates_protected_frames() {
         use crate::frame_bitmap::FrameBitmap;
 
-        let p = plan(
+        let physical_memory_plan = plan(
             &[reserved(0x4024_5001, 2), reserved(0x4100_0000, 8192)],
             region(0x4000_0000, 1200),
         )
         .unwrap();
-        let mut words = [0_u64; 2048];
-        let mut bitmap = FrameBitmap::new(&mut words, 131_072).unwrap();
-        for &protected in p.protected_regions() {
-            if let Some((first_index, count)) = p.protected_frame_interval(protected) {
-                bitmap.mark_used_range(first_index, count);
+        let mut storage_words = [0_u64; 2048];
+        let mut frame_bitmap = FrameBitmap::new(&mut storage_words, 131_072).unwrap();
+        for &protected_region in physical_memory_plan.protected_regions() {
+            if let Some((first_index, frame_count)) =
+                physical_memory_plan.protected_frame_interval(protected_region)
+            {
+                frame_bitmap.mark_used_range(first_index, frame_count);
             }
         }
         for _ in 0..1500 {
-            let index = bitmap.allocate().unwrap();
-            let frame_address =
-                p.managed_bank().start_address + (index as u64) * PHYSICAL_FRAME_BYTE_COUNT;
-            assert!(!p.is_protected_frame(frame_address));
+            let frame_index = frame_bitmap.allocate().unwrap();
+            let frame_address = physical_memory_plan.managed_bank().start_address
+                + (frame_index as u64) * PHYSICAL_FRAME_BYTE_COUNT;
+            assert!(!physical_memory_plan.is_protected_frame(frame_address));
         }
     }
 
     /// Unresolved allocations are refused rather than racing firmware ownership.
     #[test]
     fn rejects_dynamic_reservations() {
-        let bank = region(0x4000_0000, 0x2000_0000);
+        let managed_bank = region(0x4000_0000, 0x2000_0000);
         assert_eq!(
             PhysicalMemoryPlan::new(
-                bank,
+                managed_bank,
                 mapped_ram(),
-                &[bank],
+                &[managed_bank],
                 &[],
                 1,
                 0x4024_0000,
@@ -459,38 +510,60 @@ mod tests {
         );
     }
 
-    /// `no-map` memory cannot be included in an ordinary RAM direct-map.
+    /// Static `no-map` reservations remain unallocatable without rejecting the RAM bank.
     #[test]
-    fn rejects_no_map_reservations() {
-        let bank = region(0x4000_0000, 0x2000_0000);
-        let reservation = ReservedRegion {
-            region: region(0x4500_0000, 0x1000),
+    fn protects_static_no_map_reservations() {
+        let reserved_region = ReservedRegion {
+            region: region(0x4500_0001, 2),
+            source: ReservationSource::DeviceTree { no_map: true },
+        };
+        let physical_memory_plan = plan(&[reserved_region], region(0x4000_0000, 0x1000)).unwrap();
+        assert!(physical_memory_plan.is_protected_frame(0x4500_0000));
+        assert!(region_intersects_no_map_reservation(
+            region(0x4500_0000, 0x1000),
+            &[reserved_region]
+        ));
+        assert!(!region_intersects_no_map_reservation(
+            region(0x4500_1000, 0x1000),
+            &[reserved_region]
+        ));
+    }
+
+    /// A device-tree blob cannot occupy memory reserved as `no-map`.
+    #[test]
+    fn rejects_device_tree_overlapping_no_map() {
+        let reserved_region = ReservedRegion {
+            region: region(0x4000_0800, 0x1000),
             source: ReservationSource::DeviceTree { no_map: true },
         };
         assert_eq!(
-            PhysicalMemoryPlan::new(
-                bank,
-                mapped_ram(),
-                &[bank],
-                &[reservation],
-                0,
-                0x4024_0000,
-                region(0x4000_0000, 0x1000),
-                8192
-            ),
-            Err(PhysicalMemoryError::UnsupportedNoMapReservation)
+            plan(&[reserved_region], region(0x4000_0000, 0x1000)),
+            Err(PhysicalMemoryError::NoMapOverlapsDeviceTree)
+        );
+    }
+
+    /// A `no-map` reservation in the same page as the blob must also be rejected.
+    #[test]
+    fn rejects_no_map_sharing_device_tree_page() {
+        let reserved_region = ReservedRegion {
+            region: region(0x4000_0f00, 0x100),
+            source: ReservationSource::DeviceTree { no_map: true },
+        };
+        assert_eq!(
+            plan(&[reserved_region], region(0x4000_0000, 0x100)),
+            Err(PhysicalMemoryError::NoMapOverlapsDeviceTree)
         );
     }
 
     /// A bank outside the early page tables cannot be used as bitmap storage.
     #[test]
     fn rejects_unmapped_bootstrap_ram() {
-        let bank = region(0x1_0000_0000, 0x2000_0000);
+        let managed_bank = region(0x1_0000_0000, 0x2000_0000);
         assert_eq!(
             PhysicalMemoryPlan::new(
-                bank,
+                managed_bank,
                 mapped_ram(),
-                &[bank],
+                &[managed_bank],
                 &[],
                 0,
                 0x1_0024_0000,
@@ -504,13 +577,13 @@ mod tests {
     /// RAM banks must never overlap even when only the first one is currently mapped.
     #[test]
     fn rejects_overlapping_banks() {
-        let first = region(0x4000_0000, 0x2000_0000);
-        let second = region(0x5000_0000, 0x2000_0000);
+        let first_bank = region(0x4000_0000, 0x2000_0000);
+        let second_bank = region(0x5000_0000, 0x2000_0000);
         assert_eq!(
             PhysicalMemoryPlan::new(
-                first,
+                first_bank,
                 mapped_ram(),
-                &[first, second],
+                &[first_bank, second_bank],
                 &[],
                 0,
                 0x4024_0000,
@@ -524,12 +597,12 @@ mod tests {
     /// Gaps must fit the full bitmap or initialization refuses to touch memory.
     #[test]
     fn rejects_bitmap_exhaustion() {
-        let bank = region(0x4000_0000, 0x2000_0000);
+        let managed_bank = region(0x4000_0000, 0x2000_0000);
         assert_eq!(
             PhysicalMemoryPlan::new(
-                bank,
+                managed_bank,
                 mapped_ram(),
-                &[bank],
+                &[managed_bank],
                 &[],
                 0,
                 0x5fff_f000,

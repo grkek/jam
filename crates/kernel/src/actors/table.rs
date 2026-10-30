@@ -5,7 +5,10 @@ use foundation::{address::LocalAddress, configuration::Configuration};
 use super::control_block::{ActorState, ControlBlock};
 use crate::{
     actors::{inbox::Inbox, message_storage::ACTOR_INBOX_BYTE_BUDGET},
-    architecture::aarch64::memory_management_unit::invalidate_address_space_identifier,
+    architecture::aarch64::{
+        early_console::EarlyConsole,
+        memory_management_unit::invalidate_address_space_identifier,
+    },
     memory::{
         address_space::AddressSpace,
         frame_allocator::{FrameAllocator, with_frame_allocator},
@@ -19,6 +22,7 @@ use crate::{
     },
     scheduling::scheduler::enqueue_runnable,
     synchronization::spin_lock::SpinLock,
+    error,
 };
 
 /// Maximum number of actors that can exist simultaneously on this node.
@@ -134,38 +138,75 @@ fn spawn_user(
             continue;
         }
 
-        let slot_number = u32::try_from(slot_index).map_err(|_| SpawnError::TableFull)?;
+        let slot_number = match u32::try_from(slot_index) {
+            Ok(slot_number) => slot_number,
+            Err(_) => {
+                drop(control_block);
+                error!(EarlyConsole, "Actor creation failed: slot {slot_index} exceeds the address range");
+                return Err(SpawnError::TableFull);
+            }
+        };
 
-        let address_space_identifier =
-            u16::try_from(slot_index + 1).map_err(|_| SpawnError::TableFull)?;
+        let address_space_identifier = match u16::try_from(slot_index + 1) {
+            Ok(address_space_identifier) => address_space_identifier,
+            Err(_) => {
+                drop(control_block);
+                error!(EarlyConsole, "Actor creation failed: no address-space identifier for slot {slot_index}");
+                return Err(SpawnError::TableFull);
+            }
+        };
 
         // Identify this exact incarnation of the actor-table slot.
         let address = LocalAddress::new(slot_number, control_block.generation_counter);
 
-        // Keep allocator unavailability separate from image construction errors.
-        let (address_space, entry_point, stack_top) = with_frame_allocator(|frame_allocator| {
+        // Never log success while holding the global frame allocator lock.
+        // Capture the result first so error reporting cannot retain the allocator guard.
+        let image_result = with_frame_allocator(|frame_allocator| {
             build_image(frame_allocator, slot_index as u64 * PRIVATE_VALUE_STRIDE)
-        })
-        .ok_or(SpawnError::OutOfMemory)?
-        .map_err(|error| match error {
-            UserMapError::OutOfFrames => SpawnError::OutOfMemory,
-            _ => SpawnError::InvalidExecutable,
-        })?;
+        });
+
+        let (address_space, entry_point, stack_top) = match image_result {
+            Some(Ok(user_image)) => user_image,
+            Some(Err(user_map_error)) => {
+                let spawn_error = match user_map_error {
+                    UserMapError::OutOfFrames => SpawnError::OutOfMemory,
+                    _ => SpawnError::InvalidExecutable,
+                };
+                drop(control_block);
+                error!(
+                    EarlyConsole,
+                    "Actor creation failed in slot {slot_index}: user image error {user_map_error:?}"
+                );
+                return Err(spawn_error);
+            }
+            None => {
+                drop(control_block);
+                error!(
+                    EarlyConsole,
+                    "Actor creation failed in slot {slot_index}: frame allocator is unavailable"
+                );
+                return Err(SpawnError::OutOfMemory);
+            }
+        };
 
         // Prepare the initial EL0 execution context.
         let Some(frame_address) = prepare_first_user_frame(slot_index, entry_point, stack_top)
         else {
             let _ = with_frame_allocator(|frame_allocator| address_space.destroy(frame_allocator));
-
+            drop(control_block);
+            error!(
+                EarlyConsole,
+                "Actor creation failed in slot {slot_index}: initial EL0 frame unavailable"
+            );
             return Err(SpawnError::StackUnavailable);
         };
 
         invalidate_address_space_identifier(address_space_identifier);
 
-        // initialise the inbox before publishing the actor.
+        // Initialise the inbox before publishing the actor.
         control_block.inbox = Some(Inbox::new(address, ACTOR_INBOX_BYTE_BUDGET));
 
-        // initialise actor lifecycle and execution resources.
+        // Initialise actor lifecycle and execution resources.
         control_block.exit_cause = None;
         control_block.parent_address = parent_address;
         control_block.configuration = Some(configuration);
@@ -185,11 +226,19 @@ fn spawn_user(
         // Release the actor lock before interacting with the scheduler.
         drop(control_block);
 
-        enqueue_runnable(slot_index);
+        if !enqueue_runnable(slot_index) {
+            error!(
+                EarlyConsole,
+                "Actor creation failed to enqueue runnable actor in slot {slot_index}"
+            );
+            // Preserve the existing return contract. A separate scheduler change is required
+            // to roll back a fully published actor after enqueue failure.
+        }
 
         return Ok(address);
     }
 
+    error!(EarlyConsole, "Actor creation failed: actor table is full");
     Err(SpawnError::TableFull)
 }
 

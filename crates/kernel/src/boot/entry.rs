@@ -349,6 +349,8 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
         "Kernel bootstrap sequence complete. Handing control over to the scheduler..."
     );
 
+    information!(EarlyConsole, "Genesis bootstrap: beginning actor creation");
+
     match spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default()) {
         Ok(address) => information!(
             EarlyConsole,
