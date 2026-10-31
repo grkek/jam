@@ -21,7 +21,7 @@ const TEST_UNKNOWN_SYSTEM_CALL: u8 = 4;
 const TEST_NORMAL_EXIT: u8 = 5;
 
 /// Change this value to run a different fault-injection scenario.
-const SELECTED_TEST: u8 = TEST_KERNEL_READ;
+const SELECTED_TEST: u8 = TEST_NORMAL_EXIT;
 
 /// A panic must not return into an invalid actor context.
 #[panic_handler]

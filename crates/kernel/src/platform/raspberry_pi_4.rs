@@ -8,6 +8,8 @@
 
 use foundation::hardware_description::PhysicalRegion;
 
+use crate::memory::address_translation::physical_to_virtual;
+
 use super::EarlyDeviceMemoryRegion;
 
 /// ARM physical base of PL011 UART0, provided by the BCM2711 peripheral bus.
@@ -42,3 +44,32 @@ pub const DEVICE_TREE_FALLBACK_ADDRESS: Option<usize> = None;
 
 /// Prevents native secondary-core startup until BCM2711 release is implemented.
 pub const SECONDARY_CORE_STARTUP_SUPPORTED: bool = false;
+
+///
+pub fn initialise_console_hardware() {
+    const GPIO: usize = physical_to_virtual(0xfe20_0000);
+    const UART: usize = physical_to_virtual(PL011_UART_PHYSICAL_BASE_ADDRESS);
+    // SAFETY: both blocks sit inside the Device-mapped early window.
+    unsafe {
+        // GPIO14/15 -> ALT0 (PL011 TXD0/RXD0), no pull-up/down (BCM2711 PUP_PDN regs)
+        let sel = (GPIO + 0x04) as *mut u32;
+        core::ptr::write_volatile(
+            sel,
+            (core::ptr::read_volatile(sel) & !((7 << 12) | (7 << 15))) | (4 << 12) | (4 << 15),
+        );
+        let pull = (GPIO + 0xe4) as *mut u32;
+        core::ptr::write_volatile(
+            pull,
+            core::ptr::read_volatile(pull) & !((3 << 28) | (3 << 30)),
+        );
+
+        // PL011 at 48 MHz, 115200 8N1, FIFOs on
+        core::ptr::write_volatile((UART + 0x30) as *mut u32, 0); // CR: disable
+        while core::ptr::read_volatile((UART + 0x18) as *const u32) & (1 << 3) != 0 {} // wait !BUSY
+        core::ptr::write_volatile((UART + 0x44) as *mut u32, 0x7ff); // ICR: clear
+        core::ptr::write_volatile((UART + 0x24) as *mut u32, 26); // IBRD
+        core::ptr::write_volatile((UART + 0x28) as *mut u32, 3); // FBRD
+        core::ptr::write_volatile((UART + 0x2c) as *mut u32, 0x70); // LCRH: 8 bits, FIFO
+        core::ptr::write_volatile((UART + 0x30) as *mut u32, 0x301); // CR: UARTEN|TXE|RXE
+    }
+}

@@ -6,9 +6,9 @@ use super::control_block::{ActorState, ControlBlock};
 use crate::{
     actors::{inbox::Inbox, message_storage::ACTOR_INBOX_BYTE_BUDGET},
     architecture::aarch64::{
-        early_console::EarlyConsole,
-        memory_management_unit::invalidate_address_space_identifier,
+        early_console::EarlyConsole, memory_management_unit::invalidate_address_space_identifier,
     },
+    error,
     memory::{
         address_space::AddressSpace,
         frame_allocator::{FrameAllocator, with_frame_allocator},
@@ -22,7 +22,6 @@ use crate::{
     },
     scheduling::scheduler::enqueue_runnable,
     synchronization::spin_lock::SpinLock,
-    error,
 };
 
 /// Maximum number of actors that can exist simultaneously on this node.
@@ -142,7 +141,10 @@ fn spawn_user(
             Ok(slot_number) => slot_number,
             Err(_) => {
                 drop(control_block);
-                error!(EarlyConsole, "Actor creation failed: slot {slot_index} exceeds the address range");
+                error!(
+                    EarlyConsole,
+                    "Actor creation failed: slot {slot_index} exceeds the address range"
+                );
                 return Err(SpawnError::TableFull);
             }
         };
@@ -151,7 +153,10 @@ fn spawn_user(
             Ok(address_space_identifier) => address_space_identifier,
             Err(_) => {
                 drop(control_block);
-                error!(EarlyConsole, "Actor creation failed: no address-space identifier for slot {slot_index}");
+                error!(
+                    EarlyConsole,
+                    "Actor creation failed: no address-space identifier for slot {slot_index}"
+                );
                 return Err(SpawnError::TableFull);
             }
         };
