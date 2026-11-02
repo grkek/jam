@@ -27,7 +27,10 @@ fn configure_compilation() -> Result<(), String> {
     if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
         let linker_path = manifest_directory.join(linker_script);
         if !linker_path.is_file() {
-            return Err(format!("linker script is missing: {}", linker_path.display()));
+            return Err(format!(
+                "linker script is missing: {}",
+                linker_path.display()
+            ));
         }
         println!("cargo:rustc-link-arg-bins=-T{}", linker_path.display());
     }
@@ -35,11 +38,17 @@ fn configure_compilation() -> Result<(), String> {
     let genesis_program = env::var_os("GENESIS_ELF_PATH")
         .map(PathBuf::from)
         .ok_or("GENESIS_ELF_PATH is missing; use `cargo xtask build` or `cargo xtask check`")?;
-    let genesis_program = genesis_program
-        .canonicalize()
-        .map_err(|error| format!("cannot locate Genesis {}: {error}", genesis_program.display()))?;
+    let genesis_program = genesis_program.canonicalize().map_err(|error| {
+        format!(
+            "cannot locate Genesis {}: {error}",
+            genesis_program.display()
+        )
+    })?;
     if !genesis_program.is_file() {
-        return Err(format!("Genesis is not a file: {}", genesis_program.display()));
+        return Err(format!(
+            "Genesis is not a file: {}",
+            genesis_program.display()
+        ));
     }
     let genesis_path = genesis_program
         .to_str()
