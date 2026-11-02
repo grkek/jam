@@ -98,6 +98,7 @@ pub struct HardwareDescription {
     reserved_region_count: usize,
     cpu_identifiers: [u64; MAXIMUM_CPU_IDENTIFIERS],
     cpu_identifier_count: usize,
+    cpu_release_addresses: [Option<u64>; MAXIMUM_CPU_IDENTIFIERS],
     dynamic_reservation_count: usize,
 }
 
@@ -127,6 +128,16 @@ impl HardwareDescription {
         self.cpu_identifiers
             .get(..self.cpu_identifier_count)
             .unwrap_or(&[])
+    }
+
+    /// Returns a spin-table release slot for the specified CPU affinity.
+    #[must_use]
+    pub fn cpu_release_address(&self, identifier: u64) -> Option<u64> {
+        let index = self
+            .cpu_identifiers()
+            .iter()
+            .position(|value| *value == identifier)?;
+        self.cpu_release_addresses.get(index).copied().flatten()
     }
 
     /// Counts dynamic reservation requests that cannot yet be placed by JAM's allocator.
@@ -371,6 +382,7 @@ fn empty_hardware_description() -> HardwareDescription {
         reserved_region_count: 0,
         cpu_identifiers: [0; MAXIMUM_CPU_IDENTIFIERS],
         cpu_identifier_count: 0,
+        cpu_release_addresses: [None; MAXIMUM_CPU_IDENTIFIERS],
         dynamic_reservation_count: 0,
     }
 }
@@ -466,6 +478,10 @@ struct StructureWalker {
     cpu_identifier: Option<u64>,
     /// Whether the current CPU node has status `disabled`.
     cpu_disabled: bool,
+    /// Whether firmware advertises the spin-table protocol.
+    cpu_spin_table: bool,
+    /// Physical release slot supplied by firmware.
+    cpu_release_address: Option<u64>,
     /// First reservation inserted by the current reserved-memory child.
     reservation_start_index: usize,
     /// Current top-level node category.
@@ -492,6 +508,8 @@ impl StructureWalker {
             reservation_attributes: ReservationAttributes::default(),
             cpu_identifier: None,
             cpu_disabled: false,
+            cpu_spin_table: false,
+            cpu_release_address: None,
             reservation_start_index: 0,
         }
     }
@@ -526,6 +544,8 @@ impl StructureWalker {
 
             self.cpu_identifier = None;
             self.cpu_disabled = false;
+            self.cpu_spin_table = false;
+            self.cpu_release_address = None;
             self.reservation_start_index = self.description.reserved_region_count;
             self.reservation_attributes = ReservationAttributes::default();
         }
@@ -541,8 +561,20 @@ impl StructureWalker {
 
         if self.depth == 3 {
             if self.child_node_kind == ChildNodeKind::CentralProcessingUnit && !self.cpu_disabled {
+                let index = self.description.cpu_identifier_count;
                 self.description
                     .push_cpu(self.cpu_identifier.ok_or(DiscoveryError::Malformed)?)?;
+                if self.cpu_spin_table {
+                    let address = self.cpu_release_address.ok_or(DiscoveryError::Malformed)?;
+                    if address % 8 != 0 || address.checked_add(8).is_none() {
+                        return Err(DiscoveryError::Malformed);
+                    }
+                    *self
+                        .description
+                        .cpu_release_addresses
+                        .get_mut(index)
+                        .ok_or(DiscoveryError::TooManyCpuIdentifiers)? = Some(address);
+                }
             }
 
             if self.child_node_kind == ChildNodeKind::Reservation {
@@ -644,6 +676,10 @@ impl StructureWalker {
             ChildNodeKind::CentralProcessingUnit => {
                 if name == b"reg" {
                     self.cpu_identifier = Some(read_cells(data, self.cpu_address_cells)?);
+                } else if name == b"enable-method" {
+                    self.cpu_spin_table = data == b"spin-table\0";
+                } else if name == b"cpu-release-addr" {
+                    self.cpu_release_address = Some(read_cells(data, 2)?);
                 } else if name == b"status" {
                     self.cpu_disabled = data.starts_with(b"disabled\0");
                 }
@@ -1088,5 +1124,37 @@ mod tests {
             discover_hardware(&tree.build()),
             Err(DiscoveryError::InvalidRegion)
         );
+    }
+}
+
+#[cfg(test)]
+mod spin_table_tests {
+    use super::*;
+
+    /// Exercises CPU-property ordering and rejects malformed release slots.
+    #[test]
+    fn spin_table_slots_are_validated_and_kept_with_their_cpu() {
+        let mut walker = StructureWalker::new(&empty_hardware_description());
+        walker.begin_node(b"").unwrap();
+        walker.begin_node(b"cpus").unwrap();
+        walker.begin_node(b"cpu@1").unwrap();
+        walker
+            .property(b"cpu-release-addr", &0xe0u64.to_be_bytes())
+            .unwrap();
+        walker.property(b"enable-method", b"spin-table\0").unwrap();
+        walker.property(b"reg", &1u32.to_be_bytes()).unwrap();
+        walker.end_node().unwrap();
+        assert_eq!(walker.description.cpu_release_address(1), Some(0xe0));
+        walker.begin_node(b"cpu@2").unwrap();
+        walker.property(b"reg", &2u32.to_be_bytes()).unwrap();
+        walker.end_node().unwrap();
+        assert_eq!(walker.description.cpu_release_address(2), None);
+        walker.begin_node(b"cpu@3").unwrap();
+        walker.property(b"reg", &3u32.to_be_bytes()).unwrap();
+        walker.property(b"enable-method", b"spin-table\0").unwrap();
+        walker
+            .property(b"cpu-release-addr", &0xf1u64.to_be_bytes())
+            .unwrap();
+        assert_eq!(walker.end_node(), Err(DiscoveryError::Malformed));
     }
 }

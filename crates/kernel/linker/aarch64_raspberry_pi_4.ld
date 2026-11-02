@@ -55,6 +55,8 @@ SECTIONS
         __boot_tables_end = .;
     }
 
+    __boot_tables_virtual_start = __boot_tables_start + KERNEL_OFFSET;
+
     . = ALIGN(PAGE_SIZE);
     . = . + KERNEL_OFFSET;
 

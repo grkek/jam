@@ -5,8 +5,8 @@
 // Before the first Rust call, this stub moves to EL1, establishes a temporary
 // physical identity map and upper-half map, and clears BSS on the boot core.
 //
-// This stage intentionally uses core zero only. A separate Raspberry Pi
-// secondary-core release protocol is required before enabling SMP.
+// Core zero builds the bootstrap tables. Released secondary cores reuse them
+// without clearing tables or BSS, then join Rust on their own stacks.
 //
 // Temporary 1 GiB descriptors (4 KiB granule, level 1):
 //  TTBR0[0] = physical 0..1 GiB as Normal RAM, for the boot stub.
@@ -54,6 +54,11 @@ _start:
 
 begin_exception_level_one:
     msr daifset, #0xf
+    msr spsel, #1
+    mrs x0, S3_1_C15_C2_1
+    orr x0, x0, #0x40
+    msr S3_1_C15_C2_1, x0
+    isb
     bl build_boot_tables
     bl enable_boot_mmu
 
@@ -130,12 +135,41 @@ enable_boot_mmu:
     isb
     ret
 
-// Kept for the existing linker-visible PSCI ABI. On Raspberry Pi firmware
-// without a PSCI conduit, JAM does not attempt to start secondary cores.
+// Firmware branches here with the MMU off and no argument contract.
     .global secondary_entry
 secondary_entry:
-    wfe
-    b secondary_entry
+    msr daifset, #0xf
+    mrs x20, mpidr_el1
+    and x20, x20, #0xff
+    cbz x20, park_secondary_core
+    cmp x20, #4
+    b.hs park_secondary_core
+    mrs x0, currentel
+    cmp x0, #EXCEPTION_LEVEL_ONE
+    b.eq secondary_exception_level_one
+    cmp x0, #EXCEPTION_LEVEL_TWO
+    b.ne park_secondary_core
+    mov x0, #0x80000000
+    msr hcr_el2, x0
+    mov x0, #3
+    msr cnthctl_el2, x0
+    msr cntvoff_el2, xzr
+    mov x0, #0x3c5
+    msr spsr_el2, x0
+    adr x0, secondary_exception_level_one
+    msr elr_el2, x0
+    eret
+secondary_exception_level_one:
+    msr spsel, #1
+    msr tpidr_el1, x20
+    // Cortex-A72 SMPEN enables coherent cache participation.
+    mrs x0, S3_1_C15_C2_1
+    orr x0, x0, #0x40
+    msr S3_1_C15_C2_1, x0
+    isb
+    bl enable_boot_mmu
+    ldr x0, =secondary_high_entry
+    br x0
 
     .section .text, "ax"
 high_entry:
@@ -156,6 +190,20 @@ bss_cleared:
     mov x0, x19
     bl kernel_main
 
+secondary_high_entry:
+    adrp x1, __boot_stacks_bottom
+    add x1, x1, :lo12:__boot_stacks_bottom
+    ldr x2, =__boot_stack_stride
+    add x3, x20, #1
+    madd x1, x3, x2, x1
+    mov sp, x1
+    adrp x1, RASPBERRY_PI_SECONDARY_TRANSLATION_ROOT
+    add x1, x1, :lo12:RASPBERRY_PI_SECONDARY_TRANSLATION_ROOT
+    ldar x1, [x1]
+    cbz x1, park_boot_core
+    mov x0, x20
+    bl secondary_main
+
 park_boot_core:
     wfe
     b park_boot_core
@@ -165,3 +213,4 @@ park_boot_core:
     .global secondary_entry_physical_address
 secondary_entry_physical_address:
     .quad secondary_entry
+

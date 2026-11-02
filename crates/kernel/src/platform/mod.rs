@@ -16,14 +16,14 @@ pub struct EarlyDeviceMemoryRegion {
     pub end_address: usize,
 }
 
-/// Early hardware layout of QEMU's AArch64 `virt` board.
-pub mod qemu_virt;
 /// Early hardware layout of the Raspberry Pi 4 Model B (BCM2711).
 pub mod raspberry_pi_4;
+/// Early hardware layout of QEMU's AArch64 `virt` board.
+pub mod r#virtual;
 
-/// Platform selected for this kernel binary.
-#[cfg(not(feature = "raspberry-pi-4"))]
-pub use qemu_virt as current;
 /// Platform selected for this kernel binary.
 #[cfg(feature = "raspberry-pi-4")]
 pub use raspberry_pi_4 as current;
+/// Platform selected for this kernel binary.
+#[cfg(not(feature = "raspberry-pi-4"))]
+pub use r#virtual as current;

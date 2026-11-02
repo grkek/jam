@@ -330,7 +330,11 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     // Secondary cores and the timer must be live before an actor can finish and land in idle.
     if crate::platform::current::SECONDARY_CORE_STARTUP_SUPPORTED {
-        start_secondary_cores(&summary, kernel_address_space.root_table_address());
+        start_secondary_cores(
+            &summary,
+            &hardware,
+            kernel_address_space.root_table_address(),
+        );
     } else {
         warning!(
             EarlyConsole,

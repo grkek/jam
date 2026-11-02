@@ -1,8 +1,8 @@
 //! Boot-time BCM2711 hardware layout for the Raspberry Pi 4 Model B.
 //!
 //! Requires `arm_peri_high=0` and `dtoverlay=disable-bt`. UART0 on GPIO14 and GPIO15 is
-//! configured by [`initialise_console_hardware`]. This first port intentionally initializes
-//! one core; native Raspberry Pi secondary-core release is a separate platform service.
+//! configured by [`initialise_console_hardware`]. Secondary cores are released through
+//! validated firmware spin-table slots by [`release_secondary_cores`].
 //!
 //! Sources: BCM2711 ARM Peripherals, and Raspberry Pi firmware documentation.
 
@@ -42,8 +42,8 @@ pub const EARLY_DEVICE_REGIONS: [EarlyDeviceMemoryRegion; 1] = [EarlyDeviceMemor
 /// firmware-owned memory. Unlike QEMU, no fallback address is assumed.
 pub const DEVICE_TREE_FALLBACK_ADDRESS: Option<usize> = None;
 
-/// Prevents native secondary-core startup until BCM2711 release is implemented.
-pub const SECONDARY_CORE_STARTUP_SUPPORTED: bool = false;
+/// Enables the validated BCM2711 firmware spin-table startup path.
+pub const SECONDARY_CORE_STARTUP_SUPPORTED: bool = true;
 
 /// ARM physical base of the GPIO block.
 const GPIO_PHYSICAL_BASE_ADDRESS: usize = 0xfe20_0000;
@@ -157,4 +157,110 @@ pub fn initialise_console_hardware() {
         );
         write_register(uart + PL011_CONTROL_OFFSET, PL011_CONTROL_ENABLED);
     }
+}
+
+/// Kernel translation root published before firmware releases secondary cores.
+#[unsafe(no_mangle)]
+static RASPBERRY_PI_SECONDARY_TRANSLATION_ROOT: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+unsafe extern "C" {
+    /// Physical entry address emitted by the Pi boot assembly.
+    static secondary_entry_physical_address: u64;
+    /// Physical start of the two immutable bootstrap translation tables.
+    static __boot_tables_start: u8;
+    /// Upper-half address of the two bootstrap translation tables.
+    static __boot_tables_virtual_start: u8;
+}
+
+/// Writes dirty cache lines to the point of coherency before uncached firmware reads them.
+///
+/// # Safety
+/// The entire interval must be mapped normal memory, with no address overflow.
+unsafe fn publish_boot_memory(start: usize, length: usize) {
+    let cache_type: usize;
+    // SAFETY: Reading CTR_EL0 and cleaning the caller-validated mapped interval are valid at EL1.
+    unsafe {
+        core::arch::asm!("mrs {value}, ctr_el0", value = out(reg) cache_type,
+            options(nomem, nostack, preserves_flags));
+        let stride = 4usize << ((cache_type >> 16) & 15);
+        let mut address = start & !(stride - 1);
+        while address < start + length {
+            core::arch::asm!("dc cvac, {address}", address = in(reg) address,
+                options(nostack, preserves_flags));
+            address += stride;
+        }
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+    }
+}
+
+/// Releases the three BCM2711 secondary CPUs through firmware spin-table slots.
+///
+/// Validates every slot before writing any. This initial implementation accepts
+/// only the Pi firmware's slots in its reserved first page; unknown layouts are
+/// refused rather than writing arbitrary firmware-provided addresses.
+///
+/// # Errors
+/// Returns an error for unsupported CPU topology, absent spin-table properties,
+/// unreserved release slots, or an invalid kernel translation root.
+pub fn release_secondary_cores(
+    hardware: &foundation::hardware_description::HardwareDescription,
+    translation_table_address: usize,
+) -> Result<usize, &'static str> {
+    use core::sync::atomic::Ordering;
+    use foundation::hardware_description::ReservationSource;
+
+    if translation_table_address == 0 || translation_table_address % 4096 != 0 {
+        return Err("invalid kernel translation root");
+    }
+    let identifiers = hardware.cpu_identifiers();
+    if identifiers.len() != 4 || !(0..4).all(|identifier| identifiers.contains(&identifier)) {
+        return Err("expected BCM2711 CPU affinities 0, 1, 2, 3");
+    }
+    let mut slots = [0usize; 3];
+    for (index, slot) in slots.iter_mut().enumerate() {
+        let affinity = (index + 1) as u64;
+        let address = hardware
+            .cpu_release_address(affinity)
+            .ok_or("CPU has no spin-table release address")?;
+        if address != 0xd8 + affinity * 8 {
+            return Err("unsupported Pi firmware release-slot layout");
+        }
+        if !hardware
+            .memory_regions()
+            .iter()
+            .any(|region| region.start_address <= address && region.end_address() >= address + 8)
+        {
+            return Err("release slot is outside mapped RAM");
+        }
+        if !hardware.reserved_regions().iter().any(|reservation| {
+            reservation.source == ReservationSource::Firmware
+                && reservation.region.start_address <= address
+                && reservation.region.end_address() >= address + 8
+        }) {
+            return Err("release slot is not reserved by firmware");
+        }
+        *slot = physical_to_virtual(address as usize);
+        // SAFETY: The slot is aligned, lies in mapped RAM, and is reserved by firmware.
+        if unsafe { core::ptr::read_volatile(*slot as *const u64) } != 0 {
+            return Err("secondary CPU release slot is already occupied");
+        }
+    }
+    RASPBERRY_PI_SECONDARY_TRANSLATION_ROOT.store(translation_table_address, Ordering::Release);
+    // SAFETY: The root atomic and bootstrap tables are mapped normal memory.
+    // All release slots were validated above and only the boot core writes them.
+    unsafe {
+        publish_boot_memory(
+            &raw const RASPBERRY_PI_SECONDARY_TRANSLATION_ROOT as usize,
+            core::mem::size_of::<usize>(),
+        );
+        publish_boot_memory(&raw const __boot_tables_virtual_start as usize, 8192);
+        let entry = secondary_entry_physical_address;
+        for slot in slots {
+            core::ptr::write_volatile(slot as *mut u64, entry.to_le());
+            publish_boot_memory(slot, 8);
+        }
+        core::arch::asm!("dsb sy", "sev", options(nostack, preserves_flags));
+    }
+    Ok(3)
 }
