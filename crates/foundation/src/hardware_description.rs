@@ -441,18 +441,28 @@ enum ChildNodeKind {
 }
 
 /// Properties collected from the current reserved-memory child.
-#[derive(Clone, Copy, Debug, Default)]
-struct ReservationAttributes {
-    /// Whether the child declares a static physical region.
-    has_register_property: bool,
-    /// Whether the child requests dynamic memory allocation.
-    has_size_property: bool,
-    /// Whether the child prohibits ordinary memory mappings.
-    no_map: bool,
-    /// Whether the child has status `disabled`, so its reservation does not apply.
-    disabled: bool,
-    /// Whether the child is a reusable pool the OS may allocate from.
-    reusable: bool,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ReservationAttributes(u8);
+
+impl ReservationAttributes {
+    /// The child declares a static physical region.
+    const HAS_REGISTER: u8 = 1 << 0;
+    /// The child requests dynamic memory allocation.
+    const HAS_SIZE: u8 = 1 << 1;
+    /// The child prohibits ordinary memory mappings.
+    const NO_MAP: u8 = 1 << 2;
+    /// The child has status `disabled`.
+    const DISABLED: u8 = 1 << 3;
+    /// The child is a reusable pool the OS may allocate from.
+    const REUSABLE: u8 = 1 << 4;
+
+    const fn contains(self, flag: u8) -> bool {
+        self.0 & flag != 0
+    }
+
+    fn insert(&mut self, flag: u8) {
+        self.0 |= flag;
+    }
 }
 
 /// Mutable parser state for the root, CPU, RAM, and reserved-memory node levels.
@@ -578,13 +588,21 @@ impl StructureWalker {
             }
 
             if self.child_node_kind == ChildNodeKind::Reservation {
-                if self.reservation_attributes.disabled {
-                    // A disabled node reserves nothing, so discard whatever its `reg` appended.
+                if self
+                    .reservation_attributes
+                    .contains(ReservationAttributes::DISABLED)
+                {
                     self.description.reserved_region_count = self.reservation_start_index;
                 } else {
-                    if self.reservation_attributes.has_size_property
-                        && !self.reservation_attributes.has_register_property
-                        && !self.reservation_attributes.reusable
+                    if self
+                        .reservation_attributes
+                        .contains(ReservationAttributes::HAS_SIZE)
+                        && !self
+                            .reservation_attributes
+                            .contains(ReservationAttributes::HAS_REGISTER)
+                        && !self
+                            .reservation_attributes
+                            .contains(ReservationAttributes::REUSABLE)
                     {
                         self.description.dynamic_reservation_count = self
                             .description
@@ -601,10 +619,12 @@ impl StructureWalker {
                         )
                         .ok_or(DiscoveryError::Malformed)?;
 
+                    let no_map = self
+                        .reservation_attributes
+                        .contains(ReservationAttributes::NO_MAP);
+
                     for reservation in reservations {
-                        reservation.source = ReservationSource::DeviceTree {
-                            no_map: self.reservation_attributes.no_map,
-                        };
+                        reservation.source = ReservationSource::DeviceTree { no_map };
                     }
                 }
             }
@@ -704,15 +724,20 @@ impl StructureWalker {
                         },
                     )?;
 
-                    self.reservation_attributes.has_register_property = true;
+                    self.reservation_attributes
+                        .insert(ReservationAttributes::HAS_REGISTER);
                 } else if name == b"size" {
-                    self.reservation_attributes.has_size_property = true;
+                    self.reservation_attributes
+                        .insert(ReservationAttributes::HAS_SIZE);
                 } else if name == b"no-map" {
-                    self.reservation_attributes.no_map = true;
+                    self.reservation_attributes
+                        .insert(ReservationAttributes::NO_MAP);
                 } else if name == b"status" {
-                    self.reservation_attributes.disabled = data.starts_with(b"disabled\0");
+                    self.reservation_attributes
+                        .insert(ReservationAttributes::DISABLED);
                 } else if name == b"reusable" {
-                    self.reservation_attributes.reusable = true;
+                    self.reservation_attributes
+                        .insert(ReservationAttributes::REUSABLE);
                 }
             }
             ChildNodeKind::Other => {}
