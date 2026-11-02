@@ -4,28 +4,55 @@
   </a>
 </p>
 
-JAM a.k.a Just Another Microkernel is a distributed operating fabric, a fault-tolerant software based on the concurrency model of an actor for the `AArch64` system, written in Rust. It is inspired by the resilience of Erlang and dedicated to the memory of Joe Armstrong.
+JAM, a.k.a. Just Another Microkernel, is a distributed operating fabric written in Rust for AArch64. It is built around the actor concurrency model and inspired by the resilience of Erlang. Dedicated to the memory of Joe Armstrong.
 
 ## Layout
 
 | Path | Purpose |
 |---|---|
-| `crates/foundation` | Shared vocabulary: addresses, causes, farewells, resource budgets, system call ABI. No `unsafe`, testable on the host. |
-| `crates/kernel` | The microkernel. Architecture-specific code lives only in `architecture/aarch64`. |
-| `crates/runtime` | Library linked into every actor: inbox, typed messages, allocator, panic handling. |
-| `services/` | Ordinary actors: genesis, registry, observatory, distribution, drivers. |
-| `tools/xtask` | Build, run, and test automation (`cargo xtask <command>`). |
-| `documentation/` | Architecture notes and numbered decision records. |
-| `tests/` | Host tests and QEMU boot-and-assert tests. |
+| `crates/foundation` | Shared types: addresses, causes, farewells, resource budgets, and the system call ABI. No `unsafe`; testable on the host. |
+| `crates/kernel` | The microkernel, with architecture-specific code in `architecture/aarch64` and board-specific code in `platform/`. |
+| `crates/runtime` | Actor runtime support. |
+| `services/` | Userland actors: genesis, registry, observatory, distribution, and drivers. |
+| `tools/xtask` | Build and run automation. |
+| `documentation/` | Architecture notes and decision records. |
+| `tests/` | Host and QEMU tests. |
 
 ## Usage
 
+Install the toolchain specified in `rust-toolchain.toml`, then:
+
+```sh
+rustup target add aarch64-unknown-none-softfloat
+rustup component add llvm-tools
+cargo install cargo-binutils
 ```
-cargo test           # host-side tests (foundation)
-cargo xtask -- build # build everything for aarch64-unknown-none-softfloat
-cargo xtask -- run   # boot on QEMU virt with -smp 4
+
+```sh
+cargo test                                    # host-side tests
+cargo xtask build                             # build every board
+cargo xtask build --board virtual             # build QEMU virtual board
+cargo xtask build --board raspberry-pi-4      # build Raspberry Pi 4
+cargo xtask build --release                   # build every board in release mode
+cargo xtask run                               # boot QEMU virtual board with eight cores
+cargo xtask run-raspberry-pi-4                # boot QEMU on Raspberry Pi 4 board
 ```
+
+Build output goes into `target/<board>/`.
+
+The Raspberry Pi build automatically clones its firmware into
+`target/raspberry-pi-4/firmware` and reuses that checkout on later builds.
+The first build requires Git and an internet connection. QEMU `virt` does
+not need a firmware checkout.
+
+To boot a Raspberry Pi 4, copy `kernel8.img`, `config.txt`, `start4.elf`,
+`fixup4.dat`, `bcm2711-rpi-4-b.dtb`, and `overlays/` from
+`target/raspberry-pi-4/` to a FAT32 boot partition on an SD card.
+The `firmware/` checkout itself does not belong on the card.
+
+In QEMU, press `Ctrl-A`, then `X` to quit.
 
 ## Contribute
 
-See our [contribution guidelines](https://github.com/your-username/jam/blob/master/CONTRIBUTING.md) and read the [code of conduct](https://github.com/your-username/jam/blob/master/CODE_OF_CONDUCT.md).
+See the [contribution guidelines](https://github.com/grkek/jam/blob/master/CONTRIBUTING.md)
+and [code of conduct](https://github.com/grkek/jam/blob/master/CODE_OF_CONDUCT.md).

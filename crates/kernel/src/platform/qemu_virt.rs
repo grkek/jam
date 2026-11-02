@@ -30,3 +30,9 @@ pub const DEVICE_TREE_FALLBACK_ADDRESS: Option<usize> = Some(0x4000_0000);
 
 /// QEMU `virt` supports secondary-core startup through its PSCI interface.
 pub const SECONDARY_CORE_STARTUP_SUPPORTED: bool = true;
+
+/// Prepares the console hardware for output.
+///
+/// QEMU's `virt` PL011 is usable as soon as the machine starts, with no pin routing, clock or
+/// baud rate setup, so there is nothing to do. Raspberry Pi 4 configures its UART here.
+pub fn initialise_console_hardware() {}

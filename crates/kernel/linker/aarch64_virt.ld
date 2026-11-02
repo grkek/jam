@@ -36,6 +36,11 @@ __boot_stack_size        = BOOT_STACK_SIZE;
 __boot_stack_stride      = BOOT_STACK_STRIDE;
 __interrupt_stack_size   = INTERRUPT_STACK_SIZE;
 
+ASSERT(BOOT_STACK_SIZE % PAGE_SIZE == 0, "BOOT_STACK_SIZE must be a multiple of the page size")
+ASSERT(IDLE_STACK_SIZE % PAGE_SIZE == 0, "IDLE_STACK_SIZE must be a multiple of the page size")
+ASSERT(INTERRUPT_STACK_SIZE % PAGE_SIZE == 0, "INTERRUPT_STACK_SIZE must be a multiple of the page size")
+ASSERT(RECLAMATION_STACK_SIZE % PAGE_SIZE == 0, "RECLAMATION_STACK_SIZE must be a multiple of the page size")
+
 SECTIONS
 {
     . = KERNEL_PHYSICAL_BASE;

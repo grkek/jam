@@ -34,6 +34,7 @@ use crate::{
         user_memory::run_user_mapping_self_test,
         user_program::EL0_GENESIS_PROGRAM,
     },
+    platform::current::initialise_console_hardware,
     scheduling::{
         core_local::{CORE_MAXIMUM, register_current_core},
         idle::{initialise_interrupt_stack_tracking, install_idle_frames},
@@ -115,8 +116,9 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
     install_exception_vectors();
 
     let boot_ticks = read_counter_value();
-
     record_boot_ticks(boot_ticks);
+
+    initialise_console_hardware();
 
     if !register_current_core(0) {
         error!(

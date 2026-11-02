@@ -272,27 +272,32 @@ fn cell_count(data: &[u8]) -> Result<usize, DiscoveryError> {
 }
 
 /// Walks each address/size pair in a `reg` property without allocating a collection.
+///
+/// Passes the raw start address and byte count, so each caller decides what a zero size means.
 fn visit_regions(
     data: &[u8],
     address_cells: usize,
     size_cells: usize,
-    mut operation: impl FnMut(PhysicalRegion) -> Result<(), DiscoveryError>,
+    mut operation: impl FnMut(u64, u64) -> Result<(), DiscoveryError>,
 ) -> Result<(), DiscoveryError> {
     let address_bytes = address_cells * WORD_BYTE_COUNT;
     let size_bytes = size_cells * WORD_BYTE_COUNT;
     let stride = address_bytes + size_bytes;
+
     if stride == 0 || data.is_empty() || data.len() % stride != 0 {
         return Err(DiscoveryError::Malformed);
     }
+
     for pair in data.chunks_exact(stride) {
         let address = pair.get(..address_bytes).ok_or(DiscoveryError::Malformed)?;
         let size = pair.get(address_bytes..).ok_or(DiscoveryError::Malformed)?;
-        let start_address = read_cells(address, address_cells)?;
-        let byte_count = read_cells(size, size_cells)?;
-        let region =
-            PhysicalRegion::new(start_address, byte_count).ok_or(DiscoveryError::InvalidRegion)?;
-        operation(region)?;
+
+        operation(
+            read_cells(address, address_cells)?,
+            read_cells(size, size_cells)?,
+        )?;
     }
+
     Ok(())
 }
 
@@ -432,6 +437,10 @@ struct ReservationAttributes {
     has_size_property: bool,
     /// Whether the child prohibits ordinary memory mappings.
     no_map: bool,
+    /// Whether the child has status `disabled`, so its reservation does not apply.
+    disabled: bool,
+    /// Whether the child is a reusable pool the OS may allocate from.
+    reusable: bool,
 }
 
 /// Mutable parser state for the root, CPU, RAM, and reserved-memory node levels.
@@ -537,28 +546,34 @@ impl StructureWalker {
             }
 
             if self.child_node_kind == ChildNodeKind::Reservation {
-                if self.reservation_attributes.has_size_property
-                    && !self.reservation_attributes.has_register_property
-                {
-                    self.description.dynamic_reservation_count = self
+                if self.reservation_attributes.disabled {
+                    // A disabled node reserves nothing, so discard whatever its `reg` appended.
+                    self.description.reserved_region_count = self.reservation_start_index;
+                } else {
+                    if self.reservation_attributes.has_size_property
+                        && !self.reservation_attributes.has_register_property
+                        && !self.reservation_attributes.reusable
+                    {
+                        self.description.dynamic_reservation_count = self
+                            .description
+                            .dynamic_reservation_count
+                            .checked_add(1)
+                            .ok_or(DiscoveryError::Malformed)?;
+                    }
+
+                    let reservations = self
                         .description
-                        .dynamic_reservation_count
-                        .checked_add(1)
+                        .reserved_regions
+                        .get_mut(
+                            self.reservation_start_index..self.description.reserved_region_count,
+                        )
                         .ok_or(DiscoveryError::Malformed)?;
-                }
 
-                // The start index was captured when this reservation child opened.
-                // Checked slicing prevents malformed indices from modifying unrelated entries.
-                let reservations = self
-                    .description
-                    .reserved_regions
-                    .get_mut(self.reservation_start_index..self.description.reserved_region_count)
-                    .ok_or(DiscoveryError::Malformed)?;
-
-                for reservation in reservations {
-                    reservation.source = ReservationSource::DeviceTree {
-                        no_map: self.reservation_attributes.no_map,
-                    };
+                    for reservation in reservations {
+                        reservation.source = ReservationSource::DeviceTree {
+                            no_map: self.reservation_attributes.no_map,
+                        };
+                    }
                 }
             }
 
@@ -588,7 +603,16 @@ impl StructureWalker {
                         data,
                         self.root_address_cells,
                         self.root_size_cells,
-                        |region| self.description.push_memory(region),
+                        |start_address, byte_count| {
+                            // A zero-size entry is a placeholder that firmware fills in at boot.
+                            // It describes no RAM, so it is skipped, not rejected.
+                            if byte_count == 0 {
+                                return Ok(());
+                            }
+                            let region = PhysicalRegion::new(start_address, byte_count)
+                                .ok_or(DiscoveryError::InvalidRegion)?;
+                            self.description.push_memory(region)
+                        },
                     )?;
                 }
                 ParentNodeKind::CentralProcessingUnits if name == b"#address-cells" => {
@@ -630,7 +654,13 @@ impl StructureWalker {
                         data,
                         self.reserved_address_cells,
                         self.reserved_size_cells,
-                        |region| {
+                        |start_address, byte_count| {
+                            // A zero-size reservation protects nothing.
+                            if byte_count == 0 {
+                                return Ok(());
+                            }
+                            let region = PhysicalRegion::new(start_address, byte_count)
+                                .ok_or(DiscoveryError::InvalidRegion)?;
                             self.description.push_reserved(ReservedRegion {
                                 region,
                                 source: ReservationSource::DeviceTree { no_map: false },
@@ -643,6 +673,10 @@ impl StructureWalker {
                     self.reservation_attributes.has_size_property = true;
                 } else if name == b"no-map" {
                     self.reservation_attributes.no_map = true;
+                } else if name == b"status" {
+                    self.reservation_attributes.disabled = data.starts_with(b"disabled\0");
+                } else if name == b"reusable" {
+                    self.reservation_attributes.reusable = true;
                 }
             }
             ChildNodeKind::Other => {}
@@ -951,6 +985,31 @@ mod tests {
                 ReservationSource::DeviceTree { no_map: false },
             ]
         );
+    }
+
+    /// Placeholder and disabled nodes, as in the Raspberry Pi 4 tree, must not abort discovery.
+    #[test]
+    fn ignores_zero_size_and_disabled_reservations() {
+        let mut tree = TestTree::new();
+        tree.begin("");
+        tree.property("#address-cells", &cells(&[2]));
+        tree.property("#size-cells", &cells(&[1]));
+        tree.begin("memory@0");
+        tree.property("reg", &cells(&[0, 0, 0x8000_0000]));
+        tree.end();
+        tree.begin("reserved-memory");
+        tree.property("ranges", &[]);
+        tree.begin("nvram@0");
+        tree.property("reg", &cells(&[0, 0, 0]));
+        tree.property("no-map", &[]);
+        tree.property("status", b"disabled\0");
+        tree.end();
+        tree.end();
+        tree.end();
+
+        let description = discover_hardware(&tree.build()).unwrap();
+        assert_eq!(description.memory_regions().len(), 1);
+        assert!(description.reserved_regions().is_empty());
     }
 
     /// Confirms that truncated buffers cannot trigger out-of-bounds accesses.

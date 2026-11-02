@@ -1,8 +1,8 @@
 //! Boot-time BCM2711 hardware layout for the Raspberry Pi 4 Model B.
 //!
-//! Requires `arm_peri_high=0`, `enable_gic=1`, and a firmware-configured PL011
-//! UART0 on GPIO14/GPIO15. This first port intentionally initializes one core;
-//! native Raspberry Pi secondary-core release is a separate platform service.
+//! Requires `arm_peri_high=0` and `dtoverlay=disable-bt`. UART0 on GPIO14 and GPIO15 is
+//! configured by [`initialise_console_hardware`]. This first port intentionally initializes
+//! one core; native Raspberry Pi secondary-core release is a separate platform service.
 //!
 //! Sources: BCM2711 ARM Peripherals, and Raspberry Pi firmware documentation.
 
@@ -45,31 +45,116 @@ pub const DEVICE_TREE_FALLBACK_ADDRESS: Option<usize> = None;
 /// Prevents native secondary-core startup until BCM2711 release is implemented.
 pub const SECONDARY_CORE_STARTUP_SUPPORTED: bool = false;
 
+/// ARM physical base of the GPIO block.
+const GPIO_PHYSICAL_BASE_ADDRESS: usize = 0xfe20_0000;
+/// Offset of `GPFSEL1`, which selects the function of GPIO10 to GPIO19.
+const GPIO_FUNCTION_SELECT_1_OFFSET: usize = 0x04;
+/// Offset of `GPIO_PUP_PDN_CNTRL_REG0`, the BCM2711 pull control for GPIO0 to GPIO15.
+const GPIO_PULL_CONTROL_0_OFFSET: usize = 0xe4;
+/// Mask for one 3-bit pin function field in `GPFSEL1`.
+const GPIO_FUNCTION_FIELD_MASK: u32 = 0b111;
+/// Function field value that selects alternate function 0 (PL011 TXD0 and RXD0).
+const GPIO_FUNCTION_ALTERNATE_0: u32 = 0b100;
+/// Bit position of GPIO14 in `GPFSEL1`.
+const GPIO14_FUNCTION_SHIFT: u32 = 12;
+/// Bit position of GPIO15 in `GPFSEL1`.
+const GPIO15_FUNCTION_SHIFT: u32 = 15;
+/// Mask for one 2-bit pull field in `GPIO_PUP_PDN_CNTRL_REG0`. Zero means no pull resistor.
+const GPIO_PULL_FIELD_MASK: u32 = 0b11;
+/// Bit position of GPIO14 in `GPIO_PUP_PDN_CNTRL_REG0`.
+const GPIO14_PULL_SHIFT: u32 = 28;
+/// Bit position of GPIO15 in `GPIO_PUP_PDN_CNTRL_REG0`.
+const GPIO15_PULL_SHIFT: u32 = 30;
+
+/// Offset of the PL011 flag register.
+const PL011_FLAG_OFFSET: usize = 0x18;
+/// Offset of the PL011 integer baud rate divisor.
+const PL011_INTEGER_BAUD_OFFSET: usize = 0x24;
+/// Offset of the PL011 fractional baud rate divisor.
+const PL011_FRACTIONAL_BAUD_OFFSET: usize = 0x28;
+/// Offset of the PL011 line control register.
+const PL011_LINE_CONTROL_OFFSET: usize = 0x2c;
+/// Offset of the PL011 control register.
+const PL011_CONTROL_OFFSET: usize = 0x30;
+/// Offset of the PL011 interrupt clear register.
+const PL011_INTERRUPT_CLEAR_OFFSET: usize = 0x44;
+/// Flag register bit that is set while the UART is transmitting.
+const PL011_FLAG_BUSY: u32 = 1 << 3;
+/// Interrupt clear value that clears every PL011 interrupt.
+const PL011_INTERRUPT_CLEAR_ALL: u32 = 0x7ff;
+/// Integer baud divisor for 115200 baud from the 48 MHz UART clock.
+const PL011_INTEGER_BAUD_115200: u32 = 26;
+/// Fractional baud divisor for 115200 baud from the 48 MHz UART clock.
+const PL011_FRACTIONAL_BAUD_115200: u32 = 3;
+/// Line control value for 8 data bits, no parity, one stop bit, FIFOs enabled.
+const PL011_LINE_CONTROL_8N1_FIFO: u32 = 0x70;
+/// Control value that enables the UART, its transmitter and its receiver.
+const PL011_CONTROL_ENABLED: u32 = 0x301;
+
+/// Reads a 32-bit device register.
 ///
+/// # Safety
+///
+/// `address` must be a mapped, 4-byte-aligned device register.
+unsafe fn read_register(address: usize) -> u32 {
+    // SAFETY: The caller guarantees that `address` is a valid device register.
+    unsafe { core::ptr::read_volatile(address as *const u32) }
+}
+
+/// Writes a 32-bit device register.
+///
+/// # Safety
+///
+/// `address` must be a mapped, 4-byte-aligned device register.
+unsafe fn write_register(address: usize, value: u32) {
+    // SAFETY: The caller guarantees that `address` is a valid device register.
+    unsafe { core::ptr::write_volatile(address as *mut u32, value) }
+}
+
+/// Routes PL011 UART0 to GPIO14 and GPIO15 and configures it for 115200 baud, 8N1.
+///
+/// Assumes the firmware leaves the UART clock at its 48 MHz default and that
+/// `dtoverlay=disable-bt` frees UART0 from the Bluetooth controller. Call this after the
+/// upper-half device mapping is live and before the first console output.
 pub fn initialise_console_hardware() {
-    const GPIO: usize = physical_to_virtual(0xfe20_0000);
-    const UART: usize = physical_to_virtual(PL011_UART_PHYSICAL_BASE_ADDRESS);
-    // SAFETY: both blocks sit inside the Device-mapped early window.
+    let gpio = physical_to_virtual(GPIO_PHYSICAL_BASE_ADDRESS);
+    let uart = physical_to_virtual(PL011_UART_PHYSICAL_BASE_ADDRESS);
+
+    // SAFETY: Both blocks lie inside the device-mapped early window, and every offset is a
+    // 4-byte-aligned register of the BCM2711 GPIO block or the PL011.
     unsafe {
-        // GPIO14/15 -> ALT0 (PL011 TXD0/RXD0), no pull-up/down (BCM2711 PUP_PDN regs)
-        let sel = (GPIO + 0x04) as *mut u32;
-        core::ptr::write_volatile(
-            sel,
-            (core::ptr::read_volatile(sel) & !((7 << 12) | (7 << 15))) | (4 << 12) | (4 << 15),
-        );
-        let pull = (GPIO + 0xe4) as *mut u32;
-        core::ptr::write_volatile(
-            pull,
-            core::ptr::read_volatile(pull) & !((3 << 28) | (3 << 30)),
+        let function_select = gpio + GPIO_FUNCTION_SELECT_1_OFFSET;
+        let function_mask = (GPIO_FUNCTION_FIELD_MASK << GPIO14_FUNCTION_SHIFT)
+            | (GPIO_FUNCTION_FIELD_MASK << GPIO15_FUNCTION_SHIFT);
+        let function_value = (GPIO_FUNCTION_ALTERNATE_0 << GPIO14_FUNCTION_SHIFT)
+            | (GPIO_FUNCTION_ALTERNATE_0 << GPIO15_FUNCTION_SHIFT);
+        write_register(
+            function_select,
+            (read_register(function_select) & !function_mask) | function_value,
         );
 
-        // PL011 at 48 MHz, 115200 8N1, FIFOs on
-        core::ptr::write_volatile((UART + 0x30) as *mut u32, 0); // CR: disable
-        while core::ptr::read_volatile((UART + 0x18) as *const u32) & (1 << 3) != 0 {} // wait !BUSY
-        core::ptr::write_volatile((UART + 0x44) as *mut u32, 0x7ff); // ICR: clear
-        core::ptr::write_volatile((UART + 0x24) as *mut u32, 26); // IBRD
-        core::ptr::write_volatile((UART + 0x28) as *mut u32, 3); // FBRD
-        core::ptr::write_volatile((UART + 0x2c) as *mut u32, 0x70); // LCRH: 8 bits, FIFO
-        core::ptr::write_volatile((UART + 0x30) as *mut u32, 0x301); // CR: UARTEN|TXE|RXE
+        let pull_control = gpio + GPIO_PULL_CONTROL_0_OFFSET;
+        let pull_mask = (GPIO_PULL_FIELD_MASK << GPIO14_PULL_SHIFT)
+            | (GPIO_PULL_FIELD_MASK << GPIO15_PULL_SHIFT);
+        write_register(pull_control, read_register(pull_control) & !pull_mask);
+
+        // Disable the UART and let any transmission in flight finish before reconfiguring.
+        write_register(uart + PL011_CONTROL_OFFSET, 0);
+        while read_register(uart + PL011_FLAG_OFFSET) & PL011_FLAG_BUSY != 0 {}
+
+        write_register(
+            uart + PL011_INTERRUPT_CLEAR_OFFSET,
+            PL011_INTERRUPT_CLEAR_ALL,
+        );
+        write_register(uart + PL011_INTEGER_BAUD_OFFSET, PL011_INTEGER_BAUD_115200);
+        write_register(
+            uart + PL011_FRACTIONAL_BAUD_OFFSET,
+            PL011_FRACTIONAL_BAUD_115200,
+        );
+        write_register(
+            uart + PL011_LINE_CONTROL_OFFSET,
+            PL011_LINE_CONTROL_8N1_FIFO,
+        );
+        write_register(uart + PL011_CONTROL_OFFSET, PL011_CONTROL_ENABLED);
     }
 }
