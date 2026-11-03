@@ -180,20 +180,20 @@ pub enum SystemCall {
     ///
     /// The kernel validates device authority, size, alignment, and addressing
     /// constraints. Device-visible addresses need not equal physical addresses.
-    DirectMemoryAccessAllocate = 32,
+    DirectMemoryAccessAllocate = 31,
 
     /// Release a direct memory access allocation owned by the calling actor.
     ///
     /// Device access must be quiesced before the allocation can be reclaimed.
     /// Memory must not be reused while the device can still access it.
-    DirectMemoryAccessRelease = 33,
+    DirectMemoryAccessRelease = 32,
 
     /// Synchronize a direct memory access buffer for a CPU/device handoff.
     ///
     /// The request identifies the buffer range, transfer direction, and new
     /// owner. The kernel performs the required cache maintenance and ordering.
     /// Synchronization does not itself wait for device transfer completion.
-    DirectMemoryAccessSynchronize = 34,
+    DirectMemoryAccessSynchronize = 33,
 }
 
 /// A system call number the kernel does not recognise.
