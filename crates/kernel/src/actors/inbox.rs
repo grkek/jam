@@ -114,11 +114,11 @@ impl<Sender: Copy + Eq> ReceiveSelector<Sender> {
     /// Returns whether all specified metadata filters match this message.
     /// Payload matching remains the responsibility of the runtime.
     pub fn matches(&self, metadata: &MessageMetadata<Sender>) -> bool {
-        self.sender.map_or(true, |sender| sender == metadata.sender)
-            && self.tag.map_or(true, |tag| tag == metadata.tag)
+        self.sender.is_none_or(|sender| sender == metadata.sender)
+            && self.tag.is_none_or(|tag| tag == metadata.tag)
             && self
                 .correlation
-                .map_or(true, |correlation| correlation == metadata.correlation)
+                .is_none_or(|correlation| correlation == metadata.correlation)
     }
 }
 
@@ -144,7 +144,7 @@ pub struct WakeToken {
 }
 
 impl WakeToken {
-    /// Returns the local local_address authorized by this notification.
+    /// Returns the local `local_address` authorized by this notification.
     pub const fn actor_address(self) -> LocalAddress {
         self.local_address
     }
@@ -224,6 +224,23 @@ pub enum ReceiveResult<Descriptor, Sender> {
     /// The cursor belongs to a different actor incarnation.
     InvalidCursor,
     /// Monotonic receive-lease or wait identifiers have been exhausted.
+    IdentifierExhausted,
+}
+
+/// Outcome of a non-consuming, metadata-matching inbox wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InboxWaitResult {
+    /// A matching message already exists; it remains queued.
+    Ready,
+    /// No match exists and a generation-scoped wait has been registered.
+    Armed(WakeToken),
+    /// Another lease or wait is outstanding.
+    Busy,
+    /// The inbox has closed.
+    Closed,
+    /// No matching message can arrive until capacity is released.
+    Saturated,
+    /// The monotonic wait identifier cannot advance.
     IdentifierExhausted,
 }
 
@@ -351,7 +368,7 @@ impl<Descriptor, Sender: Copy + Eq, const CAPACITY: usize> Inbox<Descriptor, Sen
     pub const fn is_closed(&self) -> bool {
         self.closed
     }
-    /// Returns the local local_address of the actor that owns this inbox.
+    /// Returns the local `local_address` of the actor that owns this inbox.
     pub const fn actor_address(&self) -> LocalAddress {
         self.local_address
     }
@@ -444,9 +461,9 @@ impl<Descriptor, Sender: Copy + Eq, const CAPACITY: usize> Inbox<Descriptor, Sen
         let mut earliest: Option<(usize, u128)> = None;
         for (index, slot) in self.slots.iter().enumerate() {
             if let Slot::Queued { sequence, envelope } = slot {
-                if after.map_or(true, |cursor| *sequence > cursor.sequence)
+                if after.is_none_or(|cursor| *sequence > cursor.sequence)
                     && selector.matches(&envelope.metadata)
-                    && earliest.map_or(true, |(_, prior)| *sequence < prior)
+                    && earliest.is_none_or(|(_, prior)| *sequence < prior)
                 {
                     earliest = Some((index, *sequence));
                 }
@@ -493,6 +510,37 @@ impl<Descriptor, Sender: Copy + Eq, const CAPACITY: usize> Inbox<Descriptor, Sen
         self.next_wait_identifier = next_identifier;
         self.wait_state = WaitState::Armed { token, selector };
         ReceiveResult::Armed(token)
+    }
+
+    /// Checks for a matching message or registers a wait without taking a lease.
+    ///
+    /// The caller must hold the actor lock through the subsequent park decision.
+    pub fn await_matching(&mut self, selector: ReceiveSelector<Sender>) -> InboxWaitResult {
+        if self.closed {
+            return InboxWaitResult::Closed;
+        }
+        if self.active_lease.is_some() || !matches!(self.wait_state, WaitState::None) {
+            return InboxWaitResult::Busy;
+        }
+        if self.slots.iter().any(|slot| {
+            matches!(slot,
+            Slot::Queued { envelope, .. } if selector.matches(&envelope.metadata))
+        }) {
+            return InboxWaitResult::Ready;
+        }
+        if self.message_count == CAPACITY || self.resident_bytes >= self.maximum_resident_bytes {
+            return InboxWaitResult::Saturated;
+        }
+        let Some(next_identifier) = self.next_wait_identifier.checked_add(1) else {
+            return InboxWaitResult::IdentifierExhausted;
+        };
+        let token = WakeToken {
+            local_address: self.local_address,
+            wait_identifier: self.next_wait_identifier,
+        };
+        self.next_wait_identifier = next_identifier;
+        self.wait_state = WaitState::Armed { token, selector };
+        InboxWaitResult::Armed(token)
     }
 
     /// Called in the scheduler's block transaction while holding the actor
@@ -601,7 +649,7 @@ impl<Descriptor, Sender: Copy + Eq, const CAPACITY: usize> Inbox<Descriptor, Sen
 
     /// Pull one queued envelope after `close`. The caller drops/returns refs
     /// outside the actor lock, then repeats. Leased envelopes must resolve
-    /// before the table slot or local_address space is recycled.
+    /// before the table slot or `local_address` space is recycled.
     pub fn drain_closed(&mut self) -> Option<Envelope<Descriptor, Sender>> {
         if !self.closed {
             return None;
@@ -609,7 +657,7 @@ impl<Descriptor, Sender: Copy + Eq, const CAPACITY: usize> Inbox<Descriptor, Sen
         let mut earliest: Option<(usize, u128)> = None;
         for (index, slot) in self.slots.iter().enumerate() {
             if let Slot::Queued { sequence, .. } = slot {
-                if earliest.map_or(true, |(_, prior)| *sequence < prior) {
+                if earliest.is_none_or(|(_, prior)| *sequence < prior) {
                     earliest = Some((index, *sequence));
                 }
             }

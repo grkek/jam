@@ -350,3 +350,47 @@ mod tests {
         assert_eq!(queue.pop_front(), Some(address));
     }
 }
+
+/// Publishes a messaging wake while the caller holds the destination actor lock.
+///
+/// Uses actor -> run-queue lock order, never recursively acquires the actor lock.
+/// The queue has one entry per actor at most; a capacity failure is corruption.
+/// Syscall/interrupt callers must have interrupts masked until returning a frame.
+pub fn wake_inbox_actor(
+    actor: &mut crate::actors::control_block::ControlBlock,
+    token: crate::actors::inbox::WakeToken,
+) {
+    use crate::architecture::aarch64::power_interface::halt_machine;
+    if actor.generation_counter != token.actor_address().generation_counter()
+        || actor.state != ActorState::Waiting
+        || actor.queued
+    {
+        return;
+    }
+    let Some(core) = current_core_local() else {
+        halt_machine();
+    };
+    let Some(inbox) = actor.inbox.as_mut() else {
+        halt_machine();
+    };
+    let mut queue = core.run_queue().lock();
+    if queue.length() >= ACTOR_MAXIMUM {
+        halt_machine();
+    }
+    if !inbox.claim_wake(token) {
+        return;
+    }
+    actor.state = ActorState::Runnable;
+    actor.queued = true;
+    if !queue.push_back(token.actor_address()) {
+        halt_machine();
+    }
+}
+
+/// Dispatches after an inbox wait relinquished this core under the actor lock.
+///
+/// The old frame must not be accessed: another core may already be resuming it.
+#[must_use]
+pub fn pick_next_after_wait(core: &CoreLocal) -> usize {
+    dispatch_next(core)
+}

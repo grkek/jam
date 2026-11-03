@@ -253,6 +253,14 @@ impl<Reference, const CAPACITY: usize, const MAX_PAYLOAD_BYTES: usize, const MAX
         ))
     }
 
+    /// Returns the validated live payload length without copying it.
+    ///
+    /// # Errors
+    /// Returns the same handle-validation errors as payload copying.
+    pub fn payload_length(&self, handle: &MessageHandle) -> Result<usize, PoolError> {
+        Ok(self.valid_slot(handle)?.payload_length)
+    }
+
     /// Copies a live message into caller-owned **kernel** scratch memory.
     ///
     /// Returns the number of copied payload bytes. If the scratch buffer is

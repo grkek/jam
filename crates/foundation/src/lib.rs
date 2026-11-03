@@ -28,3 +28,6 @@ pub mod scroll;
 pub mod system_call;
 pub mod system_call_status;
 mod wire_bytes;
+
+/// Register and record conventions for local actor messaging.
+pub mod messaging;

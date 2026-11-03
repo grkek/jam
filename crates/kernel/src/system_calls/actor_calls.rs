@@ -19,19 +19,25 @@ pub fn current_address() -> (SystemCallStatus, u64) {
     let Some(core_local) = current_core_local() else {
         return (SystemCallStatus::InvalidArgument, 0);
     };
+
     let slot_index = core_local.current_slot_index();
+
     if slot_index == NO_ACTOR {
         return (SystemCallStatus::InvalidArgument, 0);
     }
+
     let Some(generation_counter) =
         with_control_block(slot_index, |control_block| control_block.generation_counter)
     else {
         return (SystemCallStatus::InvalidArgument, 0);
     };
+
     let Ok(slot_number) = u32::try_from(slot_index) else {
         return (SystemCallStatus::InvalidArgument, 0);
     };
+
     let address = LocalAddress::new(slot_number, generation_counter);
+
     (SystemCallStatus::Accepted, pack_local_address(address))
 }
 

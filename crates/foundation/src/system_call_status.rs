@@ -26,6 +26,14 @@ pub enum SystemCallStatus {
     TimedOut = 6,
     /// A scroll reference is stale, forged, or in the wrong state for this call.
     InvalidScrollReference = 7,
+    /// No matching message is currently available.
+    WouldBlock = 8,
+    /// The receive buffer is too small; x1 reports the required record size.
+    BufferTooSmall = 9,
+    /// A user buffer is unmapped, outside EL0, or lacks required permissions.
+    InvalidUserMemory = 10,
+    /// The requested option is defined but not implemented.
+    UnsupportedOperation = 11,
 }
 
 /// A status number the caller did not expect from the kernel.
@@ -37,7 +45,7 @@ pub struct UnknownSystemCallStatus {
 
 impl SystemCallStatus {
     /// Every status, in numeric order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 12] = [
         Self::Accepted,
         Self::UnknownSystemCall,
         Self::PermissionDenied,
@@ -46,6 +54,10 @@ impl SystemCallStatus {
         Self::InvalidArgument,
         Self::TimedOut,
         Self::InvalidScrollReference,
+        Self::WouldBlock,
+        Self::BufferTooSmall,
+        Self::InvalidUserMemory,
+        Self::UnsupportedOperation,
     ];
 
     /// The number placed in the status register.

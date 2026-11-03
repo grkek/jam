@@ -357,19 +357,45 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     information!(EarlyConsole, "Genesis bootstrap: beginning actor creation");
 
-    match spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default()) {
-        Ok(address) => information!(
-            EarlyConsole,
-            "Genesis actor spawned successfully at address {address}"
-        ),
-        Err(spawn_error) => {
-            error!(
-                EarlyConsole,
-                "Fatal: failed to spawn Genesis actor: {spawn_error:?}"
-            );
-            power_off_or_park(conduit);
+    let first_actor = spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default())
+        .unwrap_or_else(|_| power_off_or_park(conduit));
+
+    let second_actor = spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default())
+        .unwrap_or_else(|_| power_off_or_park(conduit));
+
+    for (destination, peer, role) in [
+        (first_actor, second_actor, 0_u64),
+        (second_actor, first_actor, 1_u64),
+    ] {
+        let packed_peer = crate::system_calls::actor_calls::pack_local_address(peer);
+
+        let mut bootstrap_payload = [0_u8; 16];
+
+        for (destination_byte, source_byte) in bootstrap_payload.iter_mut().zip(
+            packed_peer
+                .to_le_bytes()
+                .into_iter()
+                .chain(role.to_le_bytes()),
+        ) {
+            *destination_byte = source_byte;
         }
+
+        crate::messaging::delivery::tell_actor(
+            destination,
+            crate::actors::inbox::MessageMetadata {
+                sender: destination,
+                tag: 0,
+                correlation: 0,
+            },
+            &bootstrap_payload,
+        )
+        .unwrap_or_else(|_| power_off_or_park(conduit));
     }
+
+    information!(
+        EarlyConsole,
+        "Messaging demo started: {first_actor} <-> {second_actor}"
+    );
 
     loop {
         processor::wait_for_event();

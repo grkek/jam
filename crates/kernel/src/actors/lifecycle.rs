@@ -333,6 +333,19 @@ pub fn end_current_actor(cause: Cause) -> Option<usize> {
     core_local.set_current_slot_index(NO_ACTOR);
 
     reclaim_on_dedicated_stack(address, core_index);
+
+    let pool_statistics = {
+        let message_pool = MESSAGE_POOL.lock();
+        message_pool.statistics()
+    };
+
+    information!(
+        EarlyConsole,
+        "Message pool after reclaiming {address}: {} allocated, {} charged bytes",
+        pool_statistics.allocated,
+        pool_statistics.charged_bytes,
+    );
+
     if address.generation_counter() == 1 {
         let (_used, _capacity) = reclamation_stack_high_water_bytes(core_index);
     }

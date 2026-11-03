@@ -11,3 +11,6 @@ pub mod page_tables;
 pub mod private_page;
 pub mod user_memory;
 pub mod user_program;
+
+/// Checked transfers between kernel buffers and actor pages.
+pub mod user_copy;
