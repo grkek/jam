@@ -46,6 +46,35 @@ use crate::{
 const BYTES_PER_MEGABYTE: u64 = 1024 * 1024;
 const SELF_TEST_FRAME_COUNT: usize = 2;
 
+const BOOTSTRAP_BYTES: usize = 40;
+const CHURN_WAVE_SIZE: usize = 32;
+const CHURN_WAVES: usize = 8;
+
+/// Scenario identifiers understood by the EL0 stress program. Keep in sync.
+mod scenario {
+    pub const PING_PONG: u64 = 0;
+    pub const COLLECTOR_SENDER: u64 = 1;
+    pub const COLLECTOR: u64 = 2;
+    pub const SELF_CYCLE: u64 = 3;
+    pub const SIZE_PROBE: u64 = 4;
+    pub const SYSCALL_FUZZ: u64 = 5;
+    pub const SERVER: u64 = 6;
+    pub const CLIENT: u64 = 7;
+    pub const CLIENT_CRASH: u64 = 8;
+    pub const QUICK_EXIT: u64 = 9;
+    pub const SPIN_HOG: u64 = 10;
+    pub const DEAD_LETTER: u64 = 11;
+    pub const FILL_VICTIM: u64 = 12;
+    pub const BLOCK_FOREVER: u64 = 13;
+    pub const CRASH_BRK: u64 = 20;
+    pub const CRASH_NULL: u64 = 21;
+    pub const CRASH_EXEC_DATA: u64 = 22;
+    pub const CRASH_UNDEFINED: u64 = 23;
+    pub const CRASH_PANIC: u64 = 24;
+    pub const CRASH_STACK: u64 = 25;
+    pub const CRASH_WRITE_CODE: u64 = 26;
+}
+
 /// Powers the machine off through the firmware, or parks the core when there is no way to ask.
 fn power_off_or_park(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> ! {
     match conduit {
@@ -357,47 +386,282 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     information!(EarlyConsole, "Genesis bootstrap: beginning actor creation");
 
-    let first_actor = spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default())
-        .unwrap_or_else(|_| power_off_or_park(conduit));
+    information!(
+        EarlyConsole,
+        "Genesis bootstrap: beginning stress-test actor creation"
+    );
 
-    let second_actor = spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default())
-        .unwrap_or_else(|_| power_off_or_park(conduit));
+    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15 ^ (read_counter_value() as u64);
+    let mut spawned = 0_usize;
+    let mut spawn_failures = 0_usize;
+    let mut bootstrap_failures = 0_usize;
 
-    for (destination, peer, role) in [
-        (first_actor, second_actor, 0_u64),
-        (second_actor, first_actor, 1_u64),
-    ] {
-        let packed_peer = crate::system_calls::actor_calls::pack_local_address(peer);
-
-        let mut bootstrap_payload = [0_u8; 16];
-
-        for (destination_byte, source_byte) in bootstrap_payload.iter_mut().zip(
-            packed_peer
-                .to_le_bytes()
-                .into_iter()
-                .chain(role.to_le_bytes()),
-        ) {
-            *destination_byte = source_byte;
-        }
-
-        crate::messaging::delivery::tell_actor(
-            destination,
-            crate::actors::inbox::MessageMetadata {
-                sender: destination,
-                tag: 0,
-                correlation: 0,
-            },
-            &bootstrap_payload,
-        )
-        .unwrap_or_else(|_| power_off_or_park(conduit));
+    // Spawn failures are expected under stress (table exhaustion), so they are
+    // counted rather than fatal.
+    macro_rules! spawn {
+        () => {
+            match spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default()) {
+                Ok(actor) => {
+                    spawned += 1;
+                    Some(actor)
+                }
+                Err(_) => {
+                    spawn_failures += 1;
+                    None
+                }
+            }
+        };
     }
+
+    // Sends the five-word bootstrap message; evaluates to whether it was delivered.
+    macro_rules! boot {
+        ($destination:expr, $peer:expr, $role:expr, $scenario:expr, $param:expr) => {{
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let destination = $destination;
+            let packed_peer = crate::system_calls::actor_calls::pack_local_address($peer);
+            let mut payload = [0_u8; BOOTSTRAP_BYTES];
+            for (slot, value) in
+                payload
+                    .chunks_exact_mut(8)
+                    .zip([packed_peer, $role, $scenario, seed, $param])
+            {
+                slot.copy_from_slice(&value.to_le_bytes());
+            }
+            let delivered = crate::messaging::delivery::tell_actor(
+                destination,
+                crate::actors::inbox::MessageMetadata {
+                    sender: destination,
+                    tag: 0,
+                    correlation: 0,
+                },
+                &payload,
+            )
+            .is_ok();
+            if !delivered {
+                bootstrap_failures += 1;
+            }
+            delivered
+        }};
+    }
+
+    // Kernel-originated junk to an address; evaluates to how many sends were accepted.
+    macro_rules! hammer {
+        ($target:expr, $count:expr) => {{
+            let target = $target;
+            let mut accepted = 0_usize;
+            for n in 0..$count {
+                if crate::messaging::delivery::tell_actor(
+                    target,
+                    crate::actors::inbox::MessageMetadata {
+                        sender: target,
+                        tag: 3,
+                        correlation: n as u64,
+                    },
+                    b"kernel hammer",
+                )
+                .is_ok()
+                {
+                    accepted += 1;
+                }
+            }
+            accepted
+        }};
+    }
+
+    // Spawn/exit churn: actors that bootstrap and finish immediately.
+    macro_rules! churn_wave {
+        () => {{
+            let mut launched = 0_usize;
+            for _ in 0..CHURN_WAVE_SIZE {
+                if let Some(actor) = spawn!() {
+                    if boot!(actor, actor, 0_u64, scenario::QUICK_EXIT, 0_u64) {
+                        launched += 1;
+                    }
+                }
+            }
+            launched
+        }};
+    }
+
+    // A. Request/reply pairs: two healthy, one that dies mid-conversation and
+    //    leaves its partner blocked forever.
+    for die_after in [0_u64, 0, 40] {
+        if let (Some(a), Some(b)) = (spawn!(), spawn!()) {
+            boot!(a, b, 0_u64, scenario::PING_PONG, die_after);
+            boot!(b, a, 1_u64, scenario::PING_PONG, die_after);
+        }
+    }
+
+    // B. Many-to-one flood: six senders, one collector checking per-sender FIFO.
+    const COLLECTOR_SENDERS: usize = 6;
+    const COLLECTOR_COUNT: u64 = 400;
+    if let Some(collector) = spawn!() {
+        let mut launched = 0_u64;
+        for _ in 0..COLLECTOR_SENDERS {
+            if let Some(sender) = spawn!() {
+                if boot!(
+                    sender,
+                    collector,
+                    launched,
+                    scenario::COLLECTOR_SENDER,
+                    COLLECTOR_COUNT
+                ) {
+                    launched += 1;
+                }
+            }
+        }
+        boot!(
+            collector,
+            collector,
+            launched,
+            scenario::COLLECTOR,
+            COLLECTOR_COUNT
+        );
+    }
+
+    // C. One server, healthy clients, and clients that die with a request in flight.
+    const CLIENTS: usize = 4;
+    const CRASHING_CLIENTS: usize = 2;
+    const CLIENT_REQUESTS: u64 = 200;
+    if let Some(server) = spawn!() {
+        let mut expected = 0_u64;
+        let mut index = 0_u64;
+        for _ in 0..CLIENTS {
+            if let Some(client) = spawn!() {
+                if boot!(client, server, index, scenario::CLIENT, CLIENT_REQUESTS) {
+                    expected += CLIENT_REQUESTS;
+                    index += 1;
+                }
+            }
+        }
+        for _ in 0..CRASHING_CLIENTS {
+            if let Some(client) = spawn!() {
+                if boot!(client, server, index, scenario::CLIENT_CRASH, 0_u64) {
+                    expected += 1;
+                    index += 1;
+                }
+            }
+        }
+        boot!(server, server, 0_u64, scenario::SERVER, expected);
+    }
+
+    // D. Solo validators running alongside everything else.
+    for solo in [
+        scenario::SELF_CYCLE,
+        scenario::SELF_CYCLE,
+        scenario::SIZE_PROBE,
+        scenario::SIZE_PROBE,
+        scenario::SYSCALL_FUZZ,
+        scenario::SYSCALL_FUZZ,
+    ] {
+        if let Some(actor) = spawn!() {
+            boot!(actor, actor, 0_u64, solo, 0_u64);
+        }
+    }
+
+    // E. Fault injection: each dies a different way. Keep a few addresses to hit later.
+    let mut crashers = [None; 4];
+    let mut crasher_count = 0_usize;
+    for fault in [
+        scenario::CRASH_BRK,
+        scenario::CRASH_NULL,
+        scenario::CRASH_EXEC_DATA,
+        scenario::CRASH_UNDEFINED,
+        scenario::CRASH_PANIC,
+        scenario::CRASH_STACK,
+        scenario::CRASH_WRITE_CODE,
+    ] {
+        if let Some(actor) = spawn!() {
+            boot!(actor, actor, 0_u64, fault, 0_u64);
+            if crasher_count < crashers.len() {
+                crashers[crasher_count] = Some(actor);
+                crasher_count += 1;
+            }
+        }
+    }
+
+    // F. CPU hogs: preemption must keep everyone else moving.
+    for _ in 0..2 {
+        if let Some(actor) = spawn!() {
+            boot!(actor, actor, 0_u64, scenario::SPIN_HOG, 0_u64);
+        }
+    }
+
+    // G. Orphans that never receive, each with fillers pushing until the inbox refuses.
+    for _ in 0..2 {
+        if let Some(orphan) = spawn!() {
+            boot!(orphan, orphan, 0_u64, scenario::BLOCK_FOREVER, 0_u64);
+            for _ in 0..2 {
+                if let Some(filler) = spawn!() {
+                    boot!(filler, orphan, 0_u64, scenario::FILL_VICTIM, 0_u64);
+                }
+            }
+        }
+    }
+
+    // H. Spam addresses of actors that are dead or dying.
+    for target in crashers.into_iter().flatten().take(2) {
+        if let Some(spammer) = spawn!() {
+            boot!(spammer, target, 0_u64, scenario::DEAD_LETTER, 0_u64);
+        }
+    }
+
+    // I. An actor that never gets a bootstrap message, with the kernel filling its inbox.
+    let unbootstrapped = spawn!();
+    if let Some(actor) = unbootstrapped {
+        let accepted = hammer!(actor, 4096);
+        if accepted == 4096 {
+            warning!(
+                EarlyConsole,
+                "Kernel hammer: inbox of an idle actor accepted all 4096 messages (unbounded?)"
+            );
+        } else {
+            information!(
+                EarlyConsole,
+                "Kernel hammer: idle actor inbox accepted {accepted}/4096 before refusing"
+            );
+        }
+    }
+
+    // J. First churn wave.
+    let churned = churn_wave!();
 
     information!(
         EarlyConsole,
-        "Messaging demo started: {first_actor} <-> {second_actor}"
+        "Stress plan launched: {spawned} actors, {spawn_failures} spawn failures, {bootstrap_failures} bootstrap failures, {churned} churn actors"
     );
+
+    // Further churn waves reuse freed actor slots (stale-address and slot-reuse paths).
+    // The timing uses the raw counter; 62.5 MHz (QEMU virt) gives roughly one second.
+    let wave_interval = 62_500_000;
+    let mut next_wave = read_counter_value().saturating_add(wave_interval);
+    let mut waves = 0_usize;
 
     loop {
         processor::wait_for_event();
+
+        if waves < CHURN_WAVES && read_counter_value() >= next_wave {
+            waves += 1;
+            next_wave = next_wave.saturating_add(wave_interval);
+
+            let churned = churn_wave!();
+            let dead_accepted = match crashers[0] {
+                Some(target) => hammer!(target, 256),
+                None => 0,
+            };
+
+            information!(
+                EarlyConsole,
+                "Churn wave {waves}/{CHURN_WAVES}: {churned} actors launched, {dead_accepted}/256 kernel messages accepted by a dead actor"
+            );
+            if dead_accepted != 0 {
+                warning!(
+                    EarlyConsole,
+                    "A dead actor's address still accepted messages (stale address not rejected)"
+                );
+            }
+        }
     }
 }

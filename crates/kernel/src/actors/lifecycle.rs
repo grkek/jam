@@ -166,6 +166,8 @@ pub fn reclamation_stack_high_water_bytes(core_index: usize) -> (usize, usize) {
 /// current actor before calling this function. On failure, resources remain
 /// quarantined in `Exiting` and must be handled by a future reaper.
 fn reclaim_exiting_actor(address: LocalAddress) {
+    let _ = begin_actor_message_exit(address);
+
     let complete = match finish_actor_message_cleanup(address, &MESSAGE_POOL, |released| {
         // MAX_REFERENCES is currently zero; after Scroll integration this
         // callback must release every retained capability explicitly.
@@ -200,10 +202,15 @@ fn reclaim_exiting_actor(address: LocalAddress) {
         {
             return None;
         }
-        Some((actor.address_space.take(), actor.address_space_identifier))
+        Some((
+            actor.address_space.take(),
+            actor.address_space_identifier,
+            actor.saved_frame_address,
+        ))
     })
     .flatten();
-    let Some((address_space, address_space_identifier)) = detached else {
+
+    let Some((address_space, address_space_identifier, saved_frame_address)) = detached else {
         return;
     };
 
@@ -218,6 +225,12 @@ fn reclaim_exiting_actor(address: LocalAddress) {
         let released = with_frame_allocator(|allocator| {
             if let Some(address_space) = outstanding_address_space.take() {
                 let _ = address_space.destroy(allocator);
+            }
+
+            // Free the kernel stack frame back to the allocator
+            if saved_frame_address != 0 {
+                // Convert the address/frame as required by your frame allocator (e.g., physical frame address)
+                let _ = allocator.free_frame(saved_frame_address);
             }
         });
         if released.is_none() {
@@ -247,17 +260,12 @@ fn reclaim_exiting_actor(address: LocalAddress) {
             return;
         }
 
-        // No wraparound: an exhausted slot is permanently retired rather
-        // than permitting a stale LocalAddress to become valid again.
-        let Some(next_generation) = actor.generation_counter.checked_add(1) else {
-            // The exhausted actor remains in `Exiting` permanently.
-            return;
-        };
-        actor.generation_counter = next_generation;
+        actor.generation_counter = actor.generation_counter.wrapping_add(1);
         actor.parent_address = None;
         actor.configuration = None;
         actor.saved_frame_address = 0;
         actor.address_space_identifier = 0;
+        actor.saved_frame_address = 0;
         actor.exit_cause = None;
         actor.state = ActorState::Free;
     });

@@ -36,31 +36,39 @@ pub fn tell_actor(
     if slot_index >= ACTOR_MAXIMUM {
         return Err(SystemCallStatus::MalformedAddress);
     }
+
     let live = with_control_block(slot_index, |actor| {
         actor.generation_counter == destination.generation_counter()
             && !matches!(actor.state, ActorState::Free | ActorState::Exiting)
     })
     .unwrap_or(false);
+
     if !live {
-        return Ok(());
+        return Err(SystemCallStatus::MalformedAddress);
     }
+
     let allocation = MESSAGE_POOL
         .lock()
         .allocate::<LocalAddress>(destination, payload, []);
+
     let (handle, charge) = allocation.map_err(|_| SystemCallStatus::BudgetExhausted)?;
     let mut outstanding = Some(Envelope::new(metadata, handle, charge));
+
     let result = with_control_block(slot_index, |actor| {
         if actor.generation_counter != destination.generation_counter()
             || matches!(actor.state, ActorState::Free | ActorState::Exiting)
         {
-            return Ok(());
+            return Err(SystemCallStatus::MalformedAddress);
         }
+
         let Some(inbox) = actor.inbox.as_mut() else {
             halt_machine();
         };
+
         let Some(envelope) = outstanding.take() else {
             halt_machine();
         };
+
         match inbox.send(envelope) {
             Ok(SendEffect::Enqueued) => Ok(()),
             Ok(SendEffect::Wake(token)) => {
@@ -78,8 +86,10 @@ pub fn tell_actor(
         }
     })
     .unwrap_or(Ok(()));
+
     if let Some(envelope) = outstanding {
         release_message(envelope.descriptor);
     }
+
     result
 }

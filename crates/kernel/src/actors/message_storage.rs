@@ -11,8 +11,7 @@ use crate::synchronization::spin_lock::SpinLock;
 pub const MESSAGE_POOL_CAPACITY: usize = 128;
 
 /// Maximum payload bytes in one kernel-owned message.
-pub const MESSAGE_MAXIMUM_PAYLOAD_BYTES: usize =
-    foundation::messaging::MAXIMUM_PAYLOAD_BYTE_COUNT;
+pub const MESSAGE_MAXIMUM_PAYLOAD_BYTES: usize = foundation::messaging::MAXIMUM_PAYLOAD_BYTE_COUNT;
 
 /// Maximum number of messages one actor's inbox may hold at once, including a
 /// message currently leased for copy-out. Bounds per-actor descriptor storage

@@ -25,7 +25,7 @@ use crate::{
 };
 
 /// Maximum number of actors that can exist simultaneously on this node.
-pub const ACTOR_MAXIMUM: usize = 64;
+pub const ACTOR_MAXIMUM: usize = 2048;
 
 static ACTOR_TABLE: [SpinLock<ControlBlock>; ACTOR_MAXIMUM] =
     [const { SpinLock::new(ControlBlock::EMPTY) }; ACTOR_MAXIMUM];

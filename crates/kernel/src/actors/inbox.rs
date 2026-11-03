@@ -644,6 +644,7 @@ impl<Descriptor, Sender: Copy + Eq, const CAPACITY: usize> Inbox<Descriptor, Sen
     /// drain it and dispose of all returned envelopes outside the slot lock.
     pub fn close(&mut self) {
         self.closed = true;
+        self.active_lease = None;
         self.wait_state = WaitState::None;
     }
 

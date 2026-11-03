@@ -140,15 +140,16 @@ pub fn enable_kernel_address_space(
         .checked_add(memory_byte_count)
         .ok_or(KernelMapError::MemoryRegionUnsupported)?;
 
-    // The executable and read-only image sections currently share one 2 MiB block.
-    let image_block_start = align_down(virtual_to_physical(text_start), BLOCK_BYTE_COUNT);
-    let image_block_end = image_block_start + BLOCK_BYTE_COUNT;
+    // Protected image sections may span multiple 2 MiB blocks.
+    let image_start = virtual_to_physical(text_start);
+    let image_end = virtual_to_physical(text_end.max(rodata_end));
 
-    if virtual_to_physical(rodata_end) > image_block_end
-        || virtual_to_physical(text_start) < memory_start
-    {
+    if image_start < memory_start || image_end > memory_end || image_start >= image_end {
         return Err(KernelMapError::ImageOutsideBlock);
     }
+
+    let image_block_start = align_down(image_start, BLOCK_BYTE_COUNT);
+    let image_block_end = align_up(image_end, BLOCK_BYTE_COUNT);
 
     // Each entry is a physical interval containing one slice per execution core.
     let stack_regions = [
@@ -237,8 +238,9 @@ pub fn enable_kernel_address_space(
 
     // Use page mappings for protected image sections and blocks containing guards.
     for physical_address in (first_block..last_block_end).step_by(BLOCK_BYTE_COUNT) {
-        let requires_page_mappings =
-            physical_address == image_block_start || block_contains_guard(physical_address);
+        let requires_page_mappings = (image_block_start..image_block_end)
+            .contains(&physical_address)
+            || block_contains_guard(physical_address);
 
         if !requires_page_mappings {
             address_space.map_block(
