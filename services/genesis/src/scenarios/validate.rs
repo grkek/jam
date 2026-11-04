@@ -9,7 +9,7 @@ use crate::{
     bootstrap::Assignment,
     support::{
         MESSAGE_HEADER_BYTES, OrFail, PAGE_SIZE, Rng, Scratch, UNBOUNDED_INBOX_LIMIT,
-        check_scalar_contracts, current_address, expect_status, fail_at, output_address,
+        check_scalar_contracts, current_address, fail_at, fail_with_status, output_address,
         receive_into_raw_buffer, require, selector, send_retry, tag, tagged, take_scratch,
     },
 };
@@ -172,19 +172,19 @@ const FUZZ_ROUNDS: u32 = 2048;
 const SENTINEL: [u8; 8] = [7; 8];
 const SENTINEL_CORRELATION: u64 = 99;
 
-/// A hostile (pointer, length) pair for `ReceiveMessage`.
-fn hostile_buffer(rng: &mut Rng, valid_base: u64) -> (u64, u64, u64) {
+/// A hostile (kind, pointer, length) triple for `ReceiveMessage`.
+fn hostile_buffer(rng: &mut Rng, valid_base: u64) -> (u8, u64, u64) {
     match rng.next_u64() % 3 {
         // Pointer plus length wraps the address space.
-        0 => (u64::MAX - rng.next_u64() % 64, 32 + rng.next_u64() % 64, 0),
+        0 => (0, u64::MAX - rng.next_u64() % 64, 32 + rng.next_u64() % 64),
         // Kernel half of the address space.
         1 => (
+            1,
             0xffff_0000_0000_0000 | (rng.next_u64() & 0x0000_ffff_ffff_fff8),
             32 + rng.next_u64() % 64,
-            1,
         ),
         // Valid base, absurd length.
-        _ => (valid_base, u64::MAX - rng.next_u64() % 4096, u64::MAX),
+        _ => (2, valid_base, u64::MAX - rng.next_u64() % 4096),
     }
 }
 
@@ -199,27 +199,37 @@ pub fn system_call_fuzz(assignment: &Assignment) {
 
     for _ in 0..FUZZ_ROUNDS {
         let (kind, pointer, length) = hostile_buffer(&mut rng, valid_base);
-        if receive_into_raw_buffer(pointer, length) != SystemCallStatus::InvalidUserMemory.number()
-        {
-            match kind {
-                0 => fail_at::<0x101>(), // pointer + length wraps
-                1 => fail_at::<0x102>(), // kernel-half pointer
-                _ => fail_at::<0x103>(), // valid base, absurd length
+        let status = receive_into_raw_buffer(pointer, length);
+
+        if kind == 2 {
+            // A mapped base is a legitimate receive: the kernel writes only the
+            // record's bytes, so the absurd declared length is never touched.
+            // It consumes the sentinel, so put it back.
+            if status == SystemCallStatus::Accepted.number() {
+                send_retry(own, tag::COPY_CHECK, SENTINEL_CORRELATION, &SENTINEL);
+            } else if status != SystemCallStatus::InvalidUserMemory.number() {
+                fail_with_status!(0x110, status);
+            }
+        } else if status != SystemCallStatus::InvalidUserMemory.number() {
+            if kind == 0 {
+                fail_at::<0x101>() // pointer + length wraps
+            } else {
+                fail_at::<0x102>() // kernel-half pointer
             }
         }
-        expect_status(
-            receive_into_raw_buffer(pointer, length),
-            SystemCallStatus::InvalidUserMemory,
-        );
+
         check_scalar_contracts(rng.next_u64() | 1);
     }
 
     // None of the rejected calls may have consumed the sentinel.
     let mut buffer = [0u8; 64];
-    let message = inbox::receive_message(
+    let Ok(message) = inbox::receive_message(
         selector(own, tag::COPY_CHECK, SENTINEL_CORRELATION),
         &mut buffer,
-    )
-    .or_fail();
-    require(message.payload == SENTINEL);
+    ) else {
+        fail_at::<0x106>()
+    };
+    if message.payload != SENTINEL {
+        fail_at::<0x107>();
+    }
 }

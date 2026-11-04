@@ -5,7 +5,7 @@ use foundation::{
     hardware_description::HardwareDescription,
 };
 
-use super::{device_tree::load_device_tree, secondary_cores::start_secondary_cores};
+use super::{device_tree::load_device_tree, secondary_cores::start_secondary_cores, stress};
 use crate::{
     actors::{
         lifecycle::{initialise_reclamation_stack_tracking, reclamation_stack_high_water_bytes},
@@ -38,7 +38,7 @@ use crate::{
         idle::{initialise_interrupt_stack_tracking, install_idle_frames},
         scheduler::start_current_core_tick,
     },
-    stress, warning,
+    warning,
 };
 
 const BYTES_PER_MEGABYTE: u64 = 1024 * 1024;

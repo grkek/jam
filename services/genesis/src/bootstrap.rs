@@ -5,7 +5,7 @@ use foundation::{
     stress::{BOOTSTRAP_TAG, Bootstrap, Scenario},
 };
 
-use crate::support::{OrFail, tagged};
+use crate::support::{OrFail, fail_at, fail_with_status, tagged};
 use runtime::inbox;
 
 /// What this actor was told to do.
@@ -26,8 +26,14 @@ pub struct Assignment {
 impl Assignment {
     /// Blocks until the bootstrap message arrives. Any malformed message is fatal.
     pub fn receive(record: &mut [u8]) -> Self {
-        let message = inbox::await_matching(tagged(BOOTSTRAP_TAG), record).or_fail();
-        let bootstrap = Bootstrap::decode(message.payload).or_fail();
+        let message = match inbox::await_matching(tagged(BOOTSTRAP_TAG), record) {
+            Ok(message) => message,
+            Err(error) => fail_with_status!(0x120, error.status.number()),
+        };
+
+        let Some(bootstrap) = Bootstrap::decode(message.payload) else {
+            fail_at::<0x202>() // malformed or unknown scenario
+        };
 
         let low = u32::try_from(bootstrap.peer & u64::from(u32::MAX)).or_fail();
         let high = u32::try_from(bootstrap.peer >> 32).or_fail();

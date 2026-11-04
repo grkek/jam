@@ -46,7 +46,7 @@ else
   stranded=$(field "stranded")
   expected_faults=$(field "deliberate faults expected")
   stale=$(field "stale messages accepted")
-  observed_faults=$(grep -c " fault on core " "$log" || true)
+  observed_faults=$(sed '/Stress core complete:/q' "$log" | grep -c " fault on core " || true)
 
   echo "spawn failures: $spawn_failures, stranded: $stranded, stale: $stale"
   echo "faults: expected $expected_faults, observed $observed_faults"

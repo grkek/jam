@@ -3,3 +3,4 @@
 pub mod device_tree;
 pub mod entry;
 pub mod secondary_cores;
+pub mod stress;

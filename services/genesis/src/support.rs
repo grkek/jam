@@ -175,6 +175,30 @@ pub fn fail_at<const CODE: u16>() -> ! {
     }
 }
 
+/// Faults with `brk #(BASE + status)`, so the fault line shows which status came back.
+#[allow(unused_macros)]
+macro_rules! fail_with_status {
+    ($base:literal, $status:expr) => {
+        match $status {
+            0 => $crate::support::fail_at::<{ $base }>(),
+            1 => $crate::support::fail_at::<{ $base + 1 }>(),
+            2 => $crate::support::fail_at::<{ $base + 2 }>(),
+            3 => $crate::support::fail_at::<{ $base + 3 }>(),
+            4 => $crate::support::fail_at::<{ $base + 4 }>(),
+            5 => $crate::support::fail_at::<{ $base + 5 }>(),
+            6 => $crate::support::fail_at::<{ $base + 6 }>(),
+            7 => $crate::support::fail_at::<{ $base + 7 }>(),
+            8 => $crate::support::fail_at::<{ $base + 8 }>(),
+            9 => $crate::support::fail_at::<{ $base + 9 }>(),
+            10 => $crate::support::fail_at::<{ $base + 10 }>(),
+            11 => $crate::support::fail_at::<{ $base + 11 }>(),
+            _ => $crate::support::fail_at::<{ $base + 15 }>(),
+        }
+    };
+}
+
+pub(crate) use fail_with_status;
+
 /// Selects on sender, tag and correlation.
 pub fn selector(sender: LocalAddress, tag: Tag, correlation: u64) -> MessageSelector {
     MessageSelector {

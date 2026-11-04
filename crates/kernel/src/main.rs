@@ -22,8 +22,6 @@ pub mod observation;
 pub mod platform;
 /// Per-core execution and actor scheduling.
 pub mod scheduling;
-/// Stress-test scenarios and wire format shared with the EL0 stress program.
-pub mod stress;
 /// Synchronization primitives shared by kernel cores.
 pub mod synchronization;
 /// User-to-kernel system-call dispatch and handlers.
