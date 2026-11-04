@@ -29,7 +29,7 @@ pub enum Scenario {
     SelfCycle = 3,
     /// Payload sizes and page-crossing offsets.
     SizeProbe = 4,
-    /// Hostile SystemCall arguments.
+    /// Hostile `SystemCall` arguments.
     SystemCallFuzz = 5,
     /// Replies to requests. `param` = total requests to serve.
     Server = 6,
@@ -98,14 +98,30 @@ impl Scenario {
     /// Returns the scenario for a number, or `None` if unknown.
     #[must_use]
     pub const fn from_number(number: u64) -> Option<Self> {
-        let mut index = 0;
-        while index < Self::ALL.len() {
-            if Self::ALL[index] as u64 == number {
-                return Some(Self::ALL[index]);
-            }
-            index += 1;
+        match number {
+            0 => Some(Self::PingPong),
+            1 => Some(Self::CollectorSender),
+            2 => Some(Self::Collector),
+            3 => Some(Self::SelfCycle),
+            4 => Some(Self::SizeProbe),
+            5 => Some(Self::SystemCallFuzz),
+            6 => Some(Self::Server),
+            7 => Some(Self::Client),
+            8 => Some(Self::ClientCrash),
+            9 => Some(Self::QuickExit),
+            10 => Some(Self::SpinHog),
+            11 => Some(Self::DeadLetter),
+            12 => Some(Self::FillVictim),
+            13 => Some(Self::BlockForever),
+            20 => Some(Self::CrashBreakpoint),
+            21 => Some(Self::CrashNullWrite),
+            22 => Some(Self::CrashExecuteData),
+            23 => Some(Self::CrashUndefined),
+            24 => Some(Self::CrashPanic),
+            25 => Some(Self::CrashStackOverflow),
+            26 => Some(Self::CrashWriteCode),
+            _ => None,
         }
-        None
     }
 
     /// Scenarios whose only purpose is to die.

@@ -8,7 +8,9 @@ use runtime::inbox;
 use crate::{
     bootstrap::Assignment,
     support::{
-        check_scalar_contracts, current_address, expect_status, fail_at, output_address, receive_into_raw_buffer, require, selector, send_retry, tag, tagged, take_scratch, OrFail, Rng, Scratch, MESSAGE_HEADER_BYTES, PAGE_SIZE, UNBOUNDED_INBOX_LIMIT
+        MESSAGE_HEADER_BYTES, OrFail, PAGE_SIZE, Rng, Scratch, UNBOUNDED_INBOX_LIMIT,
+        check_scalar_contracts, current_address, expect_status, fail_at, output_address,
+        receive_into_raw_buffer, require, selector, send_retry, tag, tagged, take_scratch,
     },
 };
 
@@ -176,7 +178,10 @@ fn hostile_buffer(rng: &mut Rng, valid_base: u64) -> (u64, u64, u64) {
         // Pointer plus length wraps the address space.
         0 => (u64::MAX - rng.next_u64() % 64, 32 + rng.next_u64() % 64, 0),
         // Kernel half of the address space.
-        1 => (0xffff_0000_0000_0000 | (rng.next_u64() & 0x0000_ffff_ffff_fff8), 32 + rng.next_u64() % 64, 1,
+        1 => (
+            0xffff_0000_0000_0000 | (rng.next_u64() & 0x0000_ffff_ffff_fff8),
+            32 + rng.next_u64() % 64,
+            1,
         ),
         // Valid base, absurd length.
         _ => (valid_base, u64::MAX - rng.next_u64() % 4096, u64::MAX),
@@ -194,7 +199,8 @@ pub fn system_call_fuzz(assignment: &Assignment) {
 
     for _ in 0..FUZZ_ROUNDS {
         let (kind, pointer, length) = hostile_buffer(&mut rng, valid_base);
-        if receive_into_raw_buffer(pointer, length) != SystemCallStatus::InvalidUserMemory.number() {
+        if receive_into_raw_buffer(pointer, length) != SystemCallStatus::InvalidUserMemory.number()
+        {
             match kind {
                 0 => fail_at::<0x101>(), // pointer + length wraps
                 1 => fail_at::<0x102>(), // kernel-half pointer

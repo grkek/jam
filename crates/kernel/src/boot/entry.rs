@@ -1,8 +1,7 @@
 //! First Rust code executed on the boot core.
 
 use foundation::{
-    address::LocalAddress,
-    device_tree::PowerStateCoordinationInterfaceConduit,
+    address::LocalAddress, device_tree::PowerStateCoordinationInterfaceConduit,
     hardware_description::HardwareDescription,
 };
 
