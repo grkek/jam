@@ -25,6 +25,7 @@ pub mod physical_memory;
 pub mod resource_budget;
 pub mod run_queue;
 pub mod scroll;
+pub mod stress;
 pub mod system_call;
 pub mod system_call_status;
 mod wire_bytes;

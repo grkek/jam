@@ -1,0 +1,27 @@
+name: Set up toolchain
+description: Installs the pinned Rust toolchain, the AArch64 target and the tools xtask needs.
+
+runs:
+  using: composite
+  steps:
+    - name: Install the toolchain pinned in rust-toolchain.toml
+      shell: bash
+      run: rustup show active-toolchain || rustup toolchain install
+
+    - name: Add target and components
+      shell: bash
+      run: |
+        rustup target add aarch64-unknown-none-softfloat
+        rustup component add clippy rustfmt llvm-tools
+
+    - name: Install cargo-binutils
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-binutils
+
+    - name: Cache build output
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: |
+          .
+          tools/xtask

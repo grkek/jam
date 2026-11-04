@@ -289,7 +289,7 @@ fn finish_receive(
             }
         }
     });
-    // Self-exit cannot run until this syscall returns. Release the payload
+    // Self-exit cannot run until this SystemCall returns. Release the payload
     // before returning to EL0; forced remote exit requires an in-flight pin.
     if let Some(handle) = released {
         release_message(handle);

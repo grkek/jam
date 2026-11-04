@@ -3,53 +3,79 @@ name: CI
 on:
   push:
     branches: [ master ]
-
   pull_request:
     branches: [ master ]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build-and-test:
-    name: Build & Test & Lint
+  check:
+    name: Format, lint, host tests, release build
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
 
-      - name: Install Rust toolchain with components
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-none-softfloat
-          components: clippy, rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-      - name: Check code formatting (rustfmt)
-        run: cargo fmt -- --check
-
-      - name: Run Clippy (Workspace)
+      - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Install QEMU
+      - name: Host-side tests
+        run: cargo test
+
+      - name: Build every board (release)
+        run: cargo xtask build --release
+
+  boot:
+    name: Boot ${{ matrix.board }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: virtual
+            os: ubuntu-latest
+            run: run
+          # QEMU's raspi4b machine arrived in QEMU 9.0; Ubuntu 24.04 ships 8.2.
+          # Switch this to ubuntu-latest once its apt QEMU is new enough.
+          - board: raspberry-pi-4
+            os: macos-latest
+            run: run-raspberry-pi-4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      - name: Install QEMU (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-arm
 
-      - name: Run host-side tests (Foundation)
-        run: cargo test
+      - name: Install QEMU (macOS)
+        if: runner.os == 'macOS'
+        run: brew install qemu
 
-      - name: Build for `AArch64` via xtask
-        run: cargo xtask build
+      - name: QEMU version
+        run: qemu-system-aarch64 --version
 
-      - name: Run in QEMU and Verify Boot
-        run: |
-          # Run QEMU with a timeout, capture output, and assert success
-          set -o pipefail
-          timeout 5s cargo xtask run 2>&1 | tee qemu.log || true
-          
-          # Verify that the kernel actually reached the end state
-          if grep -q "Kernel bootstrap sequence complete." qemu.log; then
-            echo "Kernel booted and passed self-tests successfully!"
-            exit 0
-          else
-            echo "Kernel failed to reach 'Done.' state."
-            exit 1
-          fi
+      - name: Build ${{ matrix.board }}
+        run: cargo xtask build --board ${{ matrix.board }}
+
+      - name: Boot ${{ matrix.board }} and run the stress plan
+        run: bash tools/ci/boot-test.sh "boot-${{ matrix.board }}.log" 120 cargo xtask ${{ matrix.run }}
+
+      - name: Upload boot log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-log-${{ matrix.board }}
+          path: boot-${{ matrix.board }}.log

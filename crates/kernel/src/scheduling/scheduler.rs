@@ -355,7 +355,7 @@ mod tests {
 ///
 /// Uses actor -> run-queue lock order, never recursively acquires the actor lock.
 /// The queue has one entry per actor at most; a capacity failure is corruption.
-/// Syscall/interrupt callers must have interrupts masked until returning a frame.
+/// SystemCall/interrupt callers must have interrupts masked until returning a frame.
 pub fn wake_inbox_actor(
     actor: &mut crate::actors::control_block::ControlBlock,
     token: crate::actors::inbox::WakeToken,
