@@ -30,8 +30,8 @@ jobs:
       - name: Host-side tests
         run: cargo test
 
-      - name: Build every board (release)
-        run: cargo xtask build --release
+      - name: Build virtual board (release)
+        run: cargo xtask build --release --board virtual
 
   boot:
     name: Boot ${{ matrix.board }}
@@ -66,6 +66,10 @@ jobs:
 
       - name: QEMU version
         run: qemu-system-aarch64 --version
+
+      - name: Drop any cached firmware checkout
+        if: matrix.board == 'raspberry-pi-4'
+        run: rm -rf target/raspberry-pi-4/firmware
 
       - name: Build ${{ matrix.board }}
         run: cargo xtask build --board ${{ matrix.board }}
