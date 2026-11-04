@@ -50,18 +50,10 @@ To boot a Raspberry Pi 4, copy `kernel8.img`, `config.txt`, `start4.elf`,
 `target/raspberry-pi-4/` to a FAT32 boot partition on an SD card.
 The `firmware/` checkout itself does not belong on the card.
 
-In QEMU, press `Ctrl-A`, then `X` to quit.
-
 ### Stress test
 
 The genesis program doubles as a messaging stress test. At boot the kernel starts
-dozens of actors that flood, fuzz, crash and churn (`crates/kernel/src/stress.rs`;
-scenarios in `crates/foundation/src/stress.rs`). It then prints two lines:
-
-```
-Stress core complete: N actors, 0 spawn failures, 0 stranded, 11 deliberate faults expected, 0 stale messages accepted
-Stress done: ...
-```
+dozens of actors that flood, fuzz, crash and churn scenarios.
 
 CI boots both boards and checks that no actor was stranded, no dead address accepted
 a message, and the number of reported actor faults equals the number designed in.
@@ -71,8 +63,6 @@ Run the same check locally:
 bash tools/ci/boot-test.sh boot.log 120 cargo xtask run
 bash tools/ci/boot-test.sh boot.log 120 cargo xtask run-raspberry-pi-4
 ```
-
-The Raspberry Pi 4 board needs QEMU 9.0 or newer.
 
 ## Contribute
 
