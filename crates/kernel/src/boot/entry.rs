@@ -5,7 +5,11 @@ use foundation::{
     hardware_description::HardwareDescription,
 };
 
-use super::{device_tree::load_device_tree, secondary_cores::start_secondary_cores, stress};
+use super::{device_tree::load_device_tree, secondary_cores::start_secondary_cores};
+
+#[cfg(feature = "stress")]
+use super::stress;
+
 use crate::{
     actors::{
         lifecycle::{initialise_reclamation_stack_tracking, reclamation_stack_high_water_bytes},
@@ -200,6 +204,22 @@ fn verify_inbox_budget() {
     );
 }
 
+/// With the stress plan compiled in, run it and power off so CI can see the exit.
+#[cfg(feature = "stress")]
+fn after_bootstrap(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> ! {
+    stress::run();
+    // QEMU `virt` powers off here. Boards without a power interface park the core.
+    power_off_or_park(conduit)
+}
+
+/// Without it, stay alive. This is where the steward and Genesis will start later.
+#[cfg(not(feature = "stress"))]
+fn after_bootstrap(_conduit: Option<PowerStateCoordinationInterfaceConduit>) -> ! {
+    loop {
+        processor::wait_for_event();
+    }
+}
+
 /// Called by the assembly entry once the stack is ready and `.bss` is cleared.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
@@ -338,8 +358,5 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
         "Kernel bootstrap sequence complete. Handing control over to the scheduler..."
     );
 
-    stress::run();
-
-    // QEMU `virt` powers off here. Boards without a power interface park the core.
-    power_off_or_park(conduit)
+    after_bootstrap(conduit)
 }

@@ -72,10 +72,10 @@ jobs:
         run: rm -rf target/raspberry-pi-4/firmware
 
       - name: Build ${{ matrix.board }}
-        run: cargo xtask build --board ${{ matrix.board }}
+        run: cargo xtask build --board ${{ matrix.board }} --stress
 
       - name: Boot ${{ matrix.board }} and run the stress plan
-        run: bash tools/ci/boot-test.sh "boot-${{ matrix.board }}.log" 120 cargo xtask ${{ matrix.run }}
+        run: bash tools/ci/boot-test.sh "boot-${{ matrix.board }}.log" 120 cargo xtask ${{ matrix.run }} --stress
 
       - name: Upload boot log
         if: always()

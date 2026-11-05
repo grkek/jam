@@ -14,5 +14,8 @@ runtime.workspace = true
 name = "genesis"
 path = "src/main.rs" # Or "src/bin/genesis.rs" if your binary entry point is there
 
+[features]
+stress = []
+
 [lints]
 workspace = true

@@ -18,6 +18,7 @@ foundation.workspace = true
 [features]
 guard-page-fault-test = []
 raspberry-pi-4 = []
+stress = []
 
 [lints]
 workspace = true

@@ -27,6 +27,8 @@ const BARE_METAL_PACKAGES: [&str; 8] = [
 const TARGET_TRIPLE: &str = "aarch64-unknown-none-softfloat";
 /// Cargo feature of the kernel crate that selects the Raspberry Pi 4 platform.
 const RASPBERRY_PI_4_FEATURE: &str = "raspberry-pi-4";
+/// Cargo feature of the kernel crate that compiles in the boot-time stress plan.
+const STRESS_FEATURE: &str = "stress";
 /// A `kernel8.img` larger than this means the linker script's load addresses are wrong.
 const MAXIMUM_IMAGE_BYTE_COUNT: u64 = 16 * 1024 * 1024;
 /// Repository containing Raspberry Pi boot firmware and device trees.
@@ -107,6 +109,8 @@ struct Options {
     release: bool,
     /// Build only this board; `None` means every board.
     board: Option<Board>,
+    /// Compile the boot-time stress plan into the kernel.
+    stress: bool,
 }
 
 impl Options {
@@ -114,18 +118,29 @@ impl Options {
     fn profile_directory(&self) -> &'static str {
         if self.release { "release" } else { "debug" }
     }
+
+    /// Kernel Cargo features for `board`, plus the stress plan when requested.
+    fn kernel_features(&self, board: Board) -> Vec<&'static str> {
+        let mut features = board.features().to_vec();
+        if self.stress {
+            features.push(STRESS_FEATURE);
+        }
+        features
+    }
 }
 
-/// Parses `--release` and `--board <name>`.
+/// Parses `--release`, `--stress` and `--board <name>`.
 fn parse_options(arguments: &[String]) -> Result<Options, String> {
     let mut options = Options {
         release: false,
         board: None,
+        stress: false,
     };
     let mut remaining = arguments.iter();
     while let Some(argument) = remaining.next() {
         match argument.as_str() {
             "--release" => options.release = true,
+            "--stress" => options.stress = true,
             "--board" => {
                 let name = remaining.next().ok_or("--board needs a board name")?;
                 options.board =
@@ -353,7 +368,7 @@ fn build_board(root: &Path, board: Board, options: &Options) -> Result<PathBuf, 
     println!("== building for {}", board.name());
     build_genesis(root, options)?;
     run_checked(
-        &mut cargo_build(root, "kernel", options, board.features()),
+        &mut cargo_build(root, "kernel", options, &options.kernel_features(board)),
         "building the kernel",
     )?;
 
@@ -421,11 +436,17 @@ fn run_raspberry_pi_4(root: &Path, options: &Options) -> Result<(), String> {
 }
 
 /// Builds Genesis and verifies that the ELF needed by the kernel exists.
+///
+/// Genesis must match the kernel: the kernel's stress plan sends bootstrap messages
+/// that only the stress build of Genesis consumes.
 fn build_genesis(root: &Path, options: &Options) -> Result<(), String> {
+    let features: &[&str] = if options.stress { &[STRESS_FEATURE] } else { &[] };
+
     run_checked(
-        &mut cargo_build(root, "genesis", options, &[]),
+        &mut cargo_build(root, "genesis", options, features),
         "building Genesis",
     )?;
+
     let genesis_program = genesis_program_path(root, options);
     if !genesis_program.is_file() {
         return Err(format!(
@@ -433,6 +454,7 @@ fn build_genesis(root: &Path, options: &Options) -> Result<(), String> {
             genesis_program.display()
         ));
     }
+    
     Ok(())
 }
 
@@ -440,6 +462,9 @@ fn build_genesis(root: &Path, options: &Options) -> Result<(), String> {
 fn test(root: &Path, options: &Options) -> Result<(), String> {
     if options.board.is_some() {
         return Err("host tests do not accept --board".to_string());
+    }
+    if options.stress {
+        return Err("host tests do not accept --stress".to_string());
     }
     let mut command = Command::new(cargo_program());
     command.current_dir(root).arg("test");
@@ -453,6 +478,8 @@ fn test(root: &Path, options: &Options) -> Result<(), String> {
 ///
 /// Genesis is built before checking packages that embed it. Firmware and
 /// board images are unnecessary for these checks and are not downloaded.
+/// Every board is linted twice, with and without the stress plan, so neither
+/// configuration can rot; `--stress` is therefore not needed here.
 fn check(root: &Path, options: &Options) -> Result<(), String> {
     run_checked(
         Command::new(cargo_program())
@@ -487,23 +514,39 @@ fn check(root: &Path, options: &Options) -> Result<(), String> {
     build_genesis(root, options)?;
     let boards = options.board.map_or(Board::ALL.to_vec(), |board| vec![board]);
     for board in boards {
-        let mut command = Command::new(cargo_program());
-        command
-            .current_dir(root)
-            .args(["clippy", "--target", TARGET_TRIPLE, "--target-dir"])
-            .arg(root.join("target"))
-            .env("GENESIS_ELF_PATH", genesis_program_path(root, options));
-        for package in BARE_METAL_PACKAGES {
-            command.args(["--package", package]);
+        for stress in [false, true] {
+            let mut command = Command::new(cargo_program());
+            command
+                .current_dir(root)
+                .args(["clippy", "--target", TARGET_TRIPLE, "--target-dir"])
+                .arg(root.join("target"))
+                .env("GENESIS_ELF_PATH", genesis_program_path(root, options));
+            for package in BARE_METAL_PACKAGES {
+                command.args(["--package", package]);
+            }
+            if options.release {
+                command.arg("--release");
+            }
+            let features: Vec<String> = Options {
+                release: options.release,
+                board: options.board,
+                stress,
+            }
+            .kernel_features(board)
+            .into_iter()
+            .map(|feature| format!("kernel/{feature}"))
+            .collect();
+            if !features.is_empty() {
+                command.args(["--features", &features.join(",")]);
+            }
+            command.args(["--", "-D", "warnings"]);
+            let description = format!(
+                "Clippy for {}{}",
+                board.name(),
+                if stress { " with the stress plan" } else { "" }
+            );
+            run_checked(&mut command, &description)?;
         }
-        if options.release {
-            command.arg("--release");
-        }
-        if board == Board::RaspberryPi4 {
-            command.args(["--features", "kernel/raspberry-pi-4"]);
-        }
-        command.args(["--", "-D", "warnings"]);
-        run_checked(&mut command, &format!("Clippy for {}", board.name()))?;
     }
     Ok(())
 }
@@ -538,13 +581,17 @@ fn execute() -> Result<(), String> {
 /// Prints the command list.
 fn print_usage() {
     println!(
-        "usage: cargo xtask <command> [--release] [--board virtual|raspberry-pi-4]\n\n\
+        "usage: cargo xtask <command> [--release] [--stress] [--board virtual|raspberry-pi-4]\n\n\
          commands:\n  \
          build                 build every board (or one with --board)\n  \
          run                   build and boot the selected board (default: virtual)\n  \
          run-raspberry-pi-4    build and boot QEMU Raspberry Pi 4 board\n  \
          test                  run host tests (--release supported)\n  \
-         check                 check formatting and Clippy"
+         check                 check formatting and Clippy (with and without --stress)\n\n\
+         options:\n  \
+         --stress              compile the boot-time stress plan into the kernel\n  \
+         --release             use the release profile\n  \
+         --board <name>        build or run only this board"
     );
 }
 

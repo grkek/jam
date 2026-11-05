@@ -3,4 +3,6 @@
 pub mod device_tree;
 pub mod entry;
 pub mod secondary_cores;
+
+#[cfg(feature = "stress")]
 pub mod stress;
