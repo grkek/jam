@@ -53,6 +53,8 @@ pub struct ControlBlock {
     pub queued: bool,
     /// Message-pool releases still in progress outside the actor lock.
     pub pending_message_releases: usize,
+    /// Number of pages in this actor's one currently allocated dynamic region.
+    pub dynamic_memory_page_count: usize,
 }
 
 impl ControlBlock {
@@ -69,5 +71,6 @@ impl ControlBlock {
         inbox: None,
         queued: false,
         pending_message_releases: 0,
+        dynamic_memory_page_count: 0,
     };
 }

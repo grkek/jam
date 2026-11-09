@@ -267,6 +267,7 @@ fn reclaim_exiting_actor(address: LocalAddress) {
         actor.address_space_identifier = 0;
         actor.saved_frame_address = 0;
         actor.exit_cause = None;
+        actor.dynamic_memory_page_count = 0;
         actor.state = ActorState::Free;
     });
 }

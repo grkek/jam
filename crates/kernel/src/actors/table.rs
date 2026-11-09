@@ -1,6 +1,9 @@
 //! The table of every actor on this node.
 
-use foundation::{address::LocalAddress, configuration::Configuration};
+use foundation::{
+    address::LocalAddress, configuration::Configuration,
+    resource_budget::DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS,
+};
 
 use super::control_block::{ActorState, ControlBlock};
 use crate::{
@@ -24,11 +27,8 @@ use crate::{
     synchronization::spin_lock::SpinLock,
 };
 
-/// Maximum number of actors that can exist simultaneously on this node.
-pub const ACTOR_MAXIMUM: usize = 2048;
-
-static ACTOR_TABLE: [SpinLock<ControlBlock>; ACTOR_MAXIMUM] =
-    [const { SpinLock::new(ControlBlock::EMPTY) }; ACTOR_MAXIMUM];
+static ACTOR_TABLE: [SpinLock<ControlBlock>; DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS] =
+    [const { SpinLock::new(ControlBlock::EMPTY) }; DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS];
 
 /// Why an actor could not be spawned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

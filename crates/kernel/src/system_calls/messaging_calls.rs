@@ -13,7 +13,7 @@ use crate::{
             ReceiveResult, ReceiveSelector,
         },
         message_storage::MESSAGE_POOL,
-        table::{ACTOR_MAXIMUM, with_control_block},
+        table::with_control_block,
     },
     architecture::aarch64::{exceptions::TrapFrame, power_interface::halt_machine},
     memory::user_copy::{copy_from_actor, copy_to_actor},
@@ -29,6 +29,7 @@ use foundation::{
         INDEFINITE_WAIT, MATCH_CORRELATION, MATCH_SENDER, MATCH_TAG, MAXIMUM_PAYLOAD_BYTE_COUNT,
         MAXIMUM_RECORD_BYTE_COUNT, RECEIVED_HEADER_BYTE_COUNT, SELECTOR_FLAGS,
     },
+    resource_budget::DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS,
     system_call_status::SystemCallStatus,
 };
 
@@ -37,7 +38,7 @@ fn local_address(packed: u64) -> Result<LocalAddress, SystemCallStatus> {
     let slot = u32::try_from(packed & u64::from(u32::MAX))
         .map_err(|_| SystemCallStatus::MalformedAddress)?;
     let generation = u32::try_from(packed >> 32).map_err(|_| SystemCallStatus::MalformedAddress)?;
-    if slot as usize >= ACTOR_MAXIMUM {
+    if slot as usize >= DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS {
         return Err(SystemCallStatus::MalformedAddress);
     }
     Ok(LocalAddress::new(slot, generation))

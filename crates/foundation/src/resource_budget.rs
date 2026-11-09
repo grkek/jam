@@ -1,13 +1,19 @@
 //! Ceilings the kernel enforces on a single actor.
 
-/// Default memory budget: 256 pages, which is 1 MiB with 4 KiB pages.
-pub const DEFAULT_MEMORY_BUDGET_IN_PAGES: u32 = 256;
-/// Default number of messages an inbox may hold.
-pub const DEFAULT_INBOX_MESSAGE_BUDGET: u32 = 1024;
-/// Default number of bytes an inbox may hold: 64 KiB.
-pub const DEFAULT_INBOX_BYTE_BUDGET: u32 = 64 * 1024;
-/// Default number of messages the kernel stages for an actor before it drains them.
-pub const DEFAULT_STAGING_QUEUE_MESSAGE_BUDGET: u32 = 64;
+/// Maximum number of actors that may exist simultaneously on a node.
+pub const DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS: usize = 2048;
+
+/// Default memory budget: 16 pages (64 KiB).
+pub const DEFAULT_MEMORY_BUDGET_IN_PAGES: u32 = 16;
+
+/// Default maximum number of queued messages per actor.
+pub const DEFAULT_INBOX_MESSAGE_BUDGET: u32 = 32;
+
+/// Default maximum queued payload bytes per actor: 16 KiB.
+pub const DEFAULT_INBOX_BYTE_BUDGET: u32 = 16 * 1024;
+
+/// Default maximum number of staged messages per actor.
+pub const DEFAULT_STAGING_QUEUE_MESSAGE_BUDGET: u32 = 8;
 
 /// How much an actor may consume. Crossing a ceiling triggers the overflow policy or ends the actor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

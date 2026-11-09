@@ -2,7 +2,9 @@
 
 use core::cell::UnsafeCell;
 
-use crate::{actors::table::ACTOR_MAXIMUM, architecture::aarch64::exceptions::TrapFrame};
+use foundation::resource_budget::DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS;
+
+use crate::architecture::aarch64::exceptions::TrapFrame;
 
 /// Size of each actor's kernel stack.
 pub const KERNEL_STACK_BYTE_COUNT: usize = 16 * 1024;
@@ -12,20 +14,20 @@ const SAVED_STATE_EL1_WITH_INTERRUPTS: u64 = 0b0101;
 const SAVED_STATE_EL0_WITH_INTERRUPTS: u64 = 0b0000;
 
 #[repr(C, align(16))]
-struct StackArea(UnsafeCell<[u8; ACTOR_MAXIMUM * KERNEL_STACK_BYTE_COUNT]>);
+struct StackArea(UnsafeCell<[u8; DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS * KERNEL_STACK_BYTE_COUNT]>);
 
 // SAFETY: Each slot's stack is used only by the actor in that slot, and by the code that
 // prepares it while the slot is being spawned and nothing runs on it yet.
 unsafe impl Sync for StackArea {}
 
 static KERNEL_STACKS: StackArea = StackArea(UnsafeCell::new(
-    [0; ACTOR_MAXIMUM * KERNEL_STACK_BYTE_COUNT],
+    [0; DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS * KERNEL_STACK_BYTE_COUNT],
 ));
 
 /// The highest address of the stack belonging to `slot_index`.
 #[must_use]
 pub fn stack_top_address(slot_index: usize) -> Option<usize> {
-    if slot_index >= ACTOR_MAXIMUM {
+    if slot_index >= DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS {
         return None;
     }
     let base_address = KERNEL_STACKS.0.get() as usize;

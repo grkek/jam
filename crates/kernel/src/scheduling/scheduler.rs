@@ -9,14 +9,11 @@
 //! actor lock. Dispatch drops the queue lock before claiming an actor.
 //! Actors marked `Exiting` are never dispatched or requeued.
 
-use foundation::address::LocalAddress;
+use foundation::{address::LocalAddress, resource_budget::DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS};
 
 use super::core_local::{CoreLocal, NO_ACTOR, core_locals, current_core_local};
 use crate::{
-    actors::{
-        control_block::ActorState,
-        table::{ACTOR_MAXIMUM, with_control_block},
-    },
+    actors::{control_block::ActorState, table::with_control_block},
     architecture::aarch64::{
         exceptions::TrapFrame,
         generic_timer::{rearm_tick, start_tick},
@@ -69,7 +66,7 @@ pub fn enqueue_runnable(slot_index: usize) -> bool {
 
         let mut queue = core_local.run_queue().lock();
 
-        if queue.length() >= ACTOR_MAXIMUM {
+        if queue.length() >= DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS {
             return false;
         }
 
@@ -134,7 +131,7 @@ fn rebalance(core_local: &CoreLocal) {
 
     let transfer_count = ((victim_count - own_count) / 2)
         .min(STEAL_BATCH_MAXIMUM)
-        .min(ACTOR_MAXIMUM - own_count);
+        .min(DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS - own_count);
 
     for _ in 0..transfer_count {
         let Some(entry) = victim_queue.pop_back() else {
@@ -283,7 +280,7 @@ fn schedule(core_local: &CoreLocal, interrupted_frame_address: usize) -> usize {
                 return;
             };
             let mut queue = core_local.run_queue().lock();
-            if queue.length() >= ACTOR_MAXIMUM {
+            if queue.length() >= DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS {
                 queue_was_full = true;
                 return;
             }
@@ -374,7 +371,7 @@ pub fn wake_inbox_actor(
         halt_machine();
     };
     let mut queue = core.run_queue().lock();
-    if queue.length() >= ACTOR_MAXIMUM {
+    if queue.length() >= DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS {
         halt_machine();
     }
     if !inbox.claim_wake(token) {

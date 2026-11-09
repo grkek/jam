@@ -236,6 +236,34 @@ impl AddressSpace {
         entry.is_valid().then_some(entry)
     }
 
+    /// Removes a mapped 4 KiB leaf and returns its physical frame address.
+    ///
+    /// The caller must invalidate any cached translation and synchronize
+    /// other users of the address space before releasing the returned frame.
+    /// This leaves intermediate translation-table frames owned by this space.
+    pub fn unmap_page(&mut self, virtual_address: usize) -> Option<usize> {
+        if !is_canonical(virtual_address) || virtual_address % PAGE_BYTE_COUNT != 0 {
+            return None;
+        }
+        let mut table = self.root_table;
+        for shift in [LEVEL_ONE_SHIFT, LEVEL_TWO_SHIFT] {
+            let entry = table.read(table_index(virtual_address, shift))?;
+            if !entry.is_valid() || !entry.is_table_or_page() {
+                return None;
+            }
+            table =
+                TableFrame::from_physical_address(usize::try_from(entry.output_address()).ok()?);
+        }
+        let index = table_index(virtual_address, LEVEL_THREE_SHIFT);
+        let entry = table.read(index)?;
+        if !entry.is_valid() || !entry.is_table_or_page() {
+            return None;
+        }
+        let frame = usize::try_from(entry.output_address()).ok()?;
+        table.write(index, PageTableEntry::INVALID)?;
+        Some(frame)
+    }
+
     /// Returns every frame this space owns (tables and mapped pages) to the allocator.
     ///
     /// Only call this after no core still has this root in `TTBR0_EL1`.

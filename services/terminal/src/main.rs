@@ -20,6 +20,7 @@ use foundation::{
     address::LocalAddress, console, observation::ActorState, system_call_status::SystemCallStatus,
 };
 use runtime::{
+    allocator::{self, Allocation},
     inbox::{self, MessageSelector},
     observation,
 };
@@ -37,6 +38,10 @@ const CYAN: &str = "\x1b[36m";
 const BAR_WIDTH: u64 = 24;
 /// Use `█`/`░` for bars. Set to false for pure-ASCII `#`/`.` on terminals without UTF-8.
 const UNICODE_BARS: bool = true;
+/// Bytes per user-mapped memory page.
+const MEMORY_PAGE_BYTE_COUNT: usize = 4096;
+/// Memory test size when no explicit size is given, in KiB.
+const DEFAULT_MEMORY_TEST_KIBIBYTES: usize = 16;
 /// Frames per mebibyte (4096-byte frames).
 const FRAMES_PER_MEBIBYTE: u64 = 1024 * 1024 / 4096;
 /// Usage percentage at which a bar turns yellow.
@@ -45,7 +50,7 @@ const WARNING_PERCENT: u64 = 60;
 const CRITICAL_PERCENT: u64 = 85;
 
 /// Most actors a single census snapshot keeps; bounds this actor's stack use.
-const MAXIMUM_ACTORS: usize = 32;
+const SNAPSHOT_LIMIT: usize = 32;
 /// Bytes buffered per console write while formatting; keeps `print` small on the stack.
 const PRINT_CHUNK: usize = 256;
 /// Most words a command line may hold (the command plus its arguments).
@@ -69,6 +74,95 @@ fn address(packed: u64) -> LocalAddress {
     let slot = u32::try_from(packed & u64::from(u32::MAX)).unwrap_or_else(|_| fail());
     let generation = u32::try_from(packed >> 32).unwrap_or_else(|_| fail());
     LocalAddress::new(slot, generation)
+}
+
+/// First violation detected while checking the caller's newly allocated pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MemoryTestFailure {
+    /// A newly allocated byte was not initialised to zero.
+    NotZero {
+        page_index: usize,
+        byte_offset: usize,
+        actual: u8,
+    },
+    /// A previously written byte did not retain its expected value.
+    Corrupted {
+        page_index: usize,
+        byte_offset: usize,
+        expected: u8,
+        actual: u8,
+    },
+}
+
+/// Different contents for different pages and positions, including page boundaries.
+fn memory_test_pattern(page_index: usize, byte_offset: usize) -> u8 {
+    (page_index.wrapping_mul(131)
+        ^ byte_offset.wrapping_mul(47)
+        ^ (byte_offset >> 4)
+        ^ (byte_offset >> 9)
+        ^ 0xa5) as u8
+}
+
+/// Tests every byte without allocating a second buffer or consuming the EL0 stack.
+///
+/// # Safety invariant
+/// The kernel has exclusively mapped the returned allocation as writable,
+/// readable, non-executable EL0 pages, valid until `release_pages` succeeds.
+#[inline(never)]
+fn verify_memory_allocation(allocation: Allocation) -> Result<(), MemoryTestFailure> {
+    for page_index in 0..allocation.page_count() {
+        let page_address = allocation.start_address() + page_index * MEMORY_PAGE_BYTE_COUNT;
+        for byte_offset in 0..MEMORY_PAGE_BYTE_COUNT {
+            // SAFETY: The kernel returned these mapped pages to the calling actor;
+            // each byte is within the live allocation and reading it is permitted.
+            let actual =
+                unsafe { core::ptr::read_volatile((page_address + byte_offset) as *const u8) };
+            if actual != 0 {
+                return Err(MemoryTestFailure::NotZero {
+                    page_index,
+                    byte_offset,
+                    actual,
+                });
+            }
+        }
+    }
+
+    for page_index in 0..allocation.page_count() {
+        let page_address = allocation.start_address() + page_index * MEMORY_PAGE_BYTE_COUNT;
+        for byte_offset in 0..MEMORY_PAGE_BYTE_COUNT {
+            let expected = memory_test_pattern(page_index, byte_offset);
+            // SAFETY: The kernel exclusively mapped this writable byte into this actor.
+            unsafe {
+                core::ptr::write_volatile((page_address + byte_offset) as *mut u8, expected);
+            }
+        }
+    }
+
+    // Verify after filling *all* pages, catching accidental physical-page aliasing.
+    for page_index in 0..allocation.page_count() {
+        let page_address = allocation.start_address() + page_index * MEMORY_PAGE_BYTE_COUNT;
+        for byte_offset in 0..MEMORY_PAGE_BYTE_COUNT {
+            let expected = memory_test_pattern(page_index, byte_offset);
+            // SAFETY: The allocation remains mapped and readable until it is released.
+            let actual =
+                unsafe { core::ptr::read_volatile((page_address + byte_offset) as *const u8) };
+            if actual != expected {
+                return Err(MemoryTestFailure::Corrupted {
+                    page_index,
+                    byte_offset,
+                    expected,
+                    actual,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Snapshot of free physical frames; the kernel census is not atomic across cores.
+fn free_memory_frame_count() -> Result<u64, SystemCallStatus> {
+    let statistics = observation::read_statistics()?;
+    Ok(statistics[2])
 }
 
 /// A bounded formatting buffer; each command emits one record at a time.
@@ -262,7 +356,7 @@ const EMPTY_ENTRY: Entry = Entry {
 
 /// A bounded, non-atomic copy of the occupied slots.
 struct Census {
-    entries: [Entry; MAXIMUM_ACTORS],
+    entries: [Entry; SNAPSHOT_LIMIT],
     count: usize,
     slots: u64,
     truncated: bool,
@@ -270,7 +364,7 @@ struct Census {
 impl Census {
     const fn new() -> Self {
         Self {
-            entries: [EMPTY_ENTRY; MAXIMUM_ACTORS],
+            entries: [EMPTY_ENTRY; SNAPSHOT_LIMIT],
             count: 0,
             slots: 0,
             truncated: false,
@@ -403,6 +497,7 @@ impl Write for Sink<'_> {
 struct Terminal {
     driver: LocalAddress,
     correlation: u64,
+    allocation: Option<Allocation>,
 }
 impl Terminal {
     /// Sends one request, retrying only admission failures before it is accepted.
@@ -543,19 +638,22 @@ impl Terminal {
                 SortKey::Bytes => slice.sort_unstable_by_key(|entry| Reverse(entry.charged)),
             }
         }
+
         self.print(format_args!(
-            "{BOLD}{CYAN} {:<10} {:<9} {:<10} {:>5} {:>7}{RESET}\n",
-            "ADDRESS", "STATE", "PARENT", "MSGS", "BYTES"
+            "{BOLD}{CYAN} {:<12} {:<10} {:<12} {:<10} {:<8}{RESET}\n",
+            "ADDRESS", "STATE", "PARENT", "MESSAGES", "BYTES"
         ));
         self.print(format_args!(
-            "{DIM} {:-<10} {:-<9} {:-<10} {:->5} {:->7}{RESET}\n",
+            "{DIM} {:-<12} {:-<10} {:-<12} {:-<10} {:-<8}{RESET}\n",
             "", "", "", "", ""
         ));
+
         let mut shown = 0_u32;
         for entry in census.entries() {
             if filter.is_some_and(|state| state != entry.state) {
                 continue;
             }
+
             let (name, color) = state_style(entry.state);
             let own = address_text(entry.packed);
             let (parent_text, parent_color) = match entry.parent() {
@@ -566,15 +664,18 @@ impl Terminal {
                     (none, DIM)
                 }
             };
+
             self.print(format_args!(
-                " {:<10} {color}{name:<9}{RESET} {parent_color}{:<10}{RESET} {:>5} {:>7}\n",
+                " {:<12} {color}{name:<10}{RESET} {parent_color}{:<12}{RESET} {:<10} {:<8}\n",
                 own.as_str(),
                 parent_text.as_str(),
                 entry.messages,
                 entry.charged,
             ));
+
             shown += 1;
         }
+
         let total = census.count;
         let slots = census.slots;
         self.print(format_args!(
@@ -582,7 +683,7 @@ impl Terminal {
         ));
         if census.truncated {
             self.print(format_args!(
-                "{YELLOW} Only the first {MAXIMUM_ACTORS} actors are kept; the census was truncated.{RESET}\n"
+                "{YELLOW} Only the first {SNAPSHOT_LIMIT} actors are kept; the census was truncated.{RESET}\n"
             ));
         }
     }
@@ -710,7 +811,7 @@ impl Terminal {
         self.print(format_args!("{DIM} {count} actor(s){RESET}\n"));
         if census.truncated {
             self.print(format_args!(
-                "{YELLOW} Only the first {MAXIMUM_ACTORS} actors are kept; the census was truncated.{RESET}\n"
+                "{YELLOW} Only the first {SNAPSHOT_LIMIT} actors are kept; the census was truncated.{RESET}\n"
             ));
         }
     }
@@ -774,6 +875,227 @@ impl Terminal {
         }
     }
 
+    /// Validates zero-filling, writes, reads, and physical-frame reclamation.
+    ///
+    /// A one-page warm-up creates the persistent intermediate translation tables
+    /// before the free-frame baseline is sampled. It is released immediately.
+    #[inline(never)]
+    fn memory_test(&mut self, requested_kibibytes: usize) {
+        if self.allocation.is_some() {
+            self.print(format_args!(
+                "{YELLOW}Release the existing allocation first.{RESET}\n"
+            ));
+            return;
+        }
+
+        let Some(page_count) = requested_kibibytes.checked_add(3).map(|size| size / 4) else {
+            self.usage("memory test [KiB]");
+            return;
+        };
+        if page_count == 0 || page_count > 256 {
+            self.print(format_args!(
+                "{YELLOW}Memory tests must request 1 to 1024 KiB.{RESET}\n"
+            ));
+            return;
+        }
+
+        // A first mapping allocates page-table frames that stay in the address
+        // space after release. Account for those separately from test pages.
+        let warmup = match allocator::allocate_pages(1) {
+            Ok(allocation) => allocation,
+            Err(status) => {
+                self.print(format_args!(
+                    "{RED}Memory test warm-up failed: {status:?}{RESET}\n"
+                ));
+                return;
+            }
+        };
+        if let Err(status) = allocator::release_pages(warmup) {
+            self.allocation = Some(warmup);
+            self.print(format_args!(
+                "{RED}Memory test warm-up release failed: {status:?}{RESET}\n"
+            ));
+            return;
+        }
+
+        let before = match free_memory_frame_count() {
+            Ok(count) => count,
+            Err(status) => {
+                self.print(format_args!(
+                    "{RED}Cannot read baseline frame statistics: {status:?}{RESET}\n"
+                ));
+                return;
+            }
+        };
+        let allocation = match allocator::allocate_pages(page_count) {
+            Ok(allocation) => allocation,
+            Err(status) => {
+                self.print(format_args!(
+                    "{RED}Memory test allocation failed: {status:?}{RESET}\n"
+                ));
+                return;
+            }
+        };
+
+        let during = free_memory_frame_count();
+        let verification = verify_memory_allocation(allocation);
+        let release = allocator::release_pages(allocation);
+        if release.is_err() {
+            // Preserve ownership so `memory release` can retry the operation.
+            self.allocation = Some(allocation);
+        }
+        let after = free_memory_frame_count();
+
+        self.report_memory_test(allocation, before, during, after, verification, release);
+    }
+
+    /// Prints content-verification, release, and independently sampled allocator outcomes.
+    #[inline(never)]
+    fn report_memory_test(
+        &mut self,
+        allocation: Allocation,
+        frames_before: u64,
+        frames_during: Result<u64, SystemCallStatus>,
+        frames_after: Result<u64, SystemCallStatus>,
+        verification: Result<(), MemoryTestFailure>,
+        release: Result<(), SystemCallStatus>,
+    ) {
+        self.print(format_args!(
+            "{BOLD}{CYAN} Memory test: {} KiB ({} pages){RESET}\n",
+            allocation.page_count() * 4,
+            allocation.page_count(),
+        ));
+        match verification {
+            Ok(()) => self.print(format_args!(
+                "   {GREEN}PASS{RESET}  Zero-fill and full-page write/read verification\n"
+            )),
+            Err(error) => self.print(format_args!(
+                "   {RED}FAIL{RESET}  Memory verification: {error:?}\n"
+            )),
+        }
+        match release {
+            Ok(()) => self.print(format_args!(
+                "   {GREEN}PASS{RESET}  Page release accepted\n"
+            )),
+            Err(status) => self.print(format_args!(
+                "   {RED}FAIL{RESET}  Page release rejected: {status:?}\n"
+            )),
+        }
+
+        let frame_accounting_passed = match (frames_during, frames_after) {
+            (Ok(during_count), Ok(after_count)) => {
+                self.print(format_args!(
+                    "   Frames: {frames_before} before, {during_count} allocated, {after_count} after\n"
+                ));
+                let expected_during = frames_before.checked_sub(allocation.page_count() as u64);
+                let correct = expected_during == Some(during_count) && after_count == frames_before;
+                if !correct {
+                    self.print(format_args!(
+                        "   {YELLOW}Frame count differs (statistics are non-atomic).{RESET}\n"
+                    ));
+                }
+                correct
+            }
+            (during_count, after_count) => {
+                self.print(format_args!(
+                    "   {RED}FAIL{RESET}  Cannot read frame statistics: {during_count:?}, {after_count:?}\n"
+                ));
+                false
+            }
+        };
+
+        if verification.is_ok() && release.is_ok() && frame_accounting_passed {
+            self.print(format_args!("{GREEN} Memory test passed.{RESET}\n"));
+        } else {
+            self.print(format_args!("{RED} Memory test failed.{RESET}\n"));
+        }
+    }
+
+    /// Allocates or releases one kernel-backed memory region owned by this actor.
+    #[inline(never)]
+    fn memory_command(&mut self, arguments: &[&[u8]]) {
+        match arguments {
+            [operation] if operation.eq_ignore_ascii_case(b"status") => match self.allocation {
+                Some(allocation) => self.print(format_args!(
+                    "   Terminal owns {} KiB ({} page(s)) at {:#x}\n",
+                    allocation.page_count() * 4,
+                    allocation.page_count(),
+                    allocation.start_address(),
+                )),
+                None => self.print(format_args!("   Terminal has no dynamic allocation.\n")),
+            },
+            [operation] if operation.eq_ignore_ascii_case(b"test") => {
+                self.memory_test(DEFAULT_MEMORY_TEST_KIBIBYTES);
+            }
+            [operation, requested_size] if operation.eq_ignore_ascii_case(b"test") => {
+                let Some(kibibytes) = core::str::from_utf8(requested_size)
+                    .ok()
+                    .and_then(|text| text.parse::<usize>().ok())
+                    .filter(|size| *size > 0)
+                else {
+                    self.usage("memory test [KiB]");
+                    return;
+                };
+                self.memory_test(kibibytes);
+            }
+            [operation] if operation.eq_ignore_ascii_case(b"release") => {
+                let Some(allocation) = self.allocation else {
+                    self.print(format_args!("{YELLOW}Nothing to release.{RESET}\n"));
+                    return;
+                };
+                match allocator::release_pages(allocation) {
+                    Ok(()) => {
+                        self.allocation = None;
+                        self.print(format_args!(
+                            "{GREEN}Released {} KiB.{RESET}\n",
+                            allocation.page_count() * 4,
+                        ));
+                    }
+                    Err(status) => self.print(format_args!(
+                        "{RED}Memory release failed: {status:?}{RESET}\n"
+                    )),
+                }
+            }
+            [operation, requested_size] if operation.eq_ignore_ascii_case(b"allocate") => {
+                if self.allocation.is_some() {
+                    self.print(format_args!(
+                        "{YELLOW}Release the existing allocation first.{RESET}\n"
+                    ));
+                    return;
+                }
+                let Some(kibibytes) = core::str::from_utf8(requested_size)
+                    .ok()
+                    .and_then(|text| text.parse::<usize>().ok())
+                    .filter(|size| *size > 0)
+                else {
+                    self.usage("memory allocate <KiB>");
+                    return;
+                };
+                let Some(page_count) = kibibytes.checked_add(3).map(|bytes| bytes / 4) else {
+                    self.usage("memory allocate <KiB>");
+                    return;
+                };
+                match allocator::allocate_pages(page_count) {
+                    Ok(allocation) => {
+                        self.allocation = Some(allocation);
+                        self.print(format_args!(
+                            "{GREEN}Allocated {} KiB ({} page(s)) at {:#x}.{RESET}\n",
+                            allocation.page_count() * 4,
+                            allocation.page_count(),
+                            allocation.start_address(),
+                        ));
+                    }
+                    Err(status) => self.print(format_args!(
+                        "{RED}Memory allocation failed: {status:?}{RESET}\n"
+                    )),
+                }
+            }
+            _ => self.usage(
+                "memory allocate <KiB> | memory test [KiB] | memory status | memory release",
+            ),
+        }
+    }
+
     /// Shows how much stack is left at this call depth.
     #[inline(never)]
     fn stack(&mut self) {
@@ -817,6 +1139,13 @@ impl Terminal {
                 "Show one actor in detail, e.g. actor <0.2.1>",
             ),
             ("tree", "Show the actor hierarchy"),
+            (
+                "memory allocate <KiB>",
+                "Allocate kernel-backed memory for Terminal",
+            ),
+            ("memory status", "Show Terminal's current allocation"),
+            ("memory test [KiB]", "Verify mapped pages and reclamation"),
+            ("memory release", "Release Terminal's allocation"),
             ("stack", "Show remaining stack space"),
             ("statistics", "Show memory, messaging, and actor counters"),
             ("version", "Show the terminal version"),
@@ -824,9 +1153,7 @@ impl Terminal {
         ] {
             self.print(format_args!("   {BOLD}{usage:<24}{RESET}{description}\n"));
         }
-        self.print(format_args!(
-            "{DIM}   aliases: ? = help, ps = actors, stats = statistics, cls = clear{RESET}\n"
-        ));
+        self.print(format_args!("{DIM}   aliases: ? = help{RESET}\n"));
     }
 
     /// Reports and returns whether a command that takes no arguments received any.
@@ -905,14 +1232,15 @@ impl Terminal {
                     self.help();
                 }
             }
-            b"actors" | b"ps" => self.actors_command(arguments),
+            b"actors" => self.actors_command(arguments),
             b"actor" => self.actor_command(arguments),
             b"tree" => {
                 if !self.rejects_arguments("tree", arguments) {
                     self.tree();
                 }
             }
-            b"statistics" | b"stats" => {
+            b"memory" => self.memory_command(arguments),
+            b"statistics" => {
                 if !self.rejects_arguments("statistics", arguments) {
                     self.statistics();
                 }
@@ -927,7 +1255,7 @@ impl Terminal {
                     self.version();
                 }
             }
-            b"clear" | b"cls" => {
+            b"clear" => {
                 if !self.rejects_arguments("clear", arguments) {
                     self.write(CLEAR_SCREEN);
                 }
@@ -947,6 +1275,7 @@ pub extern "C" fn _start(driver_identity: u64) -> ! {
     let mut terminal = Terminal {
         driver,
         correlation: 0,
+        allocation: None,
     };
     #[cfg(feature = "observation-tests")]
     {

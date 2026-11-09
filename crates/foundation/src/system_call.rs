@@ -77,9 +77,12 @@ pub enum SystemCall {
     AdjustConfiguration = 9,
 
     /// Obtain pages of memory for the actor's own heap.
+    /// x0 is page count; success returns the first EL0 virtual address in x1.
+    /// Initially, one contiguous allocation per actor is supported.
     AllocatePages = 10,
 
     /// Return previously allocated heap pages owned by the calling actor.
+    /// x0 is the first address, x1 is the exact allocated page count.
     ReleasePages = 11,
 
     /// Read a snapshot of the actor table.

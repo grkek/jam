@@ -9,12 +9,15 @@ use crate::{
         inbox::{Envelope, MessageMetadata, SendEffect, SendError},
         message_pool::MessageHandle,
         message_storage::MESSAGE_POOL,
-        table::{ACTOR_MAXIMUM, with_control_block},
+        table::with_control_block,
     },
     architecture::aarch64::power_interface::halt_machine,
     scheduling::scheduler::wake_inbox_actor,
 };
-use foundation::{address::LocalAddress, system_call_status::SystemCallStatus};
+use foundation::{
+    address::LocalAddress, resource_budget::DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS,
+    system_call_status::SystemCallStatus,
+};
 
 /// Releases a message outside actor locks; pool corruption stops execution.
 pub fn release_message(handle: MessageHandle) {
@@ -33,7 +36,7 @@ pub fn tell_actor(
     payload: &[u8],
 ) -> Result<(), SystemCallStatus> {
     let slot_index = destination.slot_index() as usize;
-    if slot_index >= ACTOR_MAXIMUM {
+    if slot_index >= DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS {
         return Err(SystemCallStatus::MalformedAddress);
     }
 

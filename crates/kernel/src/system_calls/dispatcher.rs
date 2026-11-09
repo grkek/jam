@@ -39,8 +39,14 @@ pub fn dispatch(trap_frame: *mut TrapFrame) -> *mut TrapFrame {
             trap_frame
         }
         Ok(SystemCall::AdjustConfiguration) => unsupported_call(trap_frame),
-        Ok(SystemCall::AllocatePages) => unsupported_call(trap_frame),
-        Ok(SystemCall::ReleasePages) => unsupported_call(trap_frame),
+        Ok(SystemCall::AllocatePages) => {
+            super::memory_calls::allocate_pages(frame);
+            trap_frame
+        }
+        Ok(SystemCall::ReleasePages) => {
+            super::memory_calls::release_pages(frame);
+            trap_frame
+        }
         Ok(SystemCall::ReadCensus) => {
             super::observation_calls::read(frame, false);
             trap_frame

@@ -7,14 +7,14 @@ use crate::{
     actors::{
         control_block::ActorState,
         message_storage::{ACTOR_INBOX_BYTE_BUDGET, MESSAGE_POOL, MESSAGE_POOL_CAPACITY},
-        table::{ACTOR_MAXIMUM, with_control_block},
+        table::with_control_block,
     },
     architecture::aarch64::exceptions::TrapFrame,
     memory::{frame_allocator::with_frame_allocator, user_copy::copy_to_actor},
     scheduling::core_local::{current_core_local, online_core_count},
     system_calls::actor_calls::pack_local_address,
 };
-use foundation::address::LocalAddress;
+use foundation::{address::LocalAddress, resource_budget::DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS};
 use foundation::{observation, system_call_status::SystemCallStatus};
 
 /// Collects one slot under its own lock, without retaining it during copy-out.
@@ -61,7 +61,7 @@ fn statistics_record() -> Result<observation::StatisticsRecord, SystemCallStatus
     let pool = MESSAGE_POOL.lock().statistics();
     let mut occupied = 0_u64;
     let mut waiting = 0_u64;
-    for slot in 0..ACTOR_MAXIMUM {
+    for slot in 0..DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS {
         let state = with_control_block(slot, |actor| actor.state)
             .ok_or(SystemCallStatus::InvalidArgument)?;
         occupied += u64::from(state != ActorState::Free);
@@ -75,7 +75,7 @@ fn statistics_record() -> Result<observation::StatisticsRecord, SystemCallStatus
         pool.allocated as u64,
         pool.charged_bytes as u64,
         online_core_count() as u64,
-        ACTOR_MAXIMUM as u64,
+        DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS as u64,
         occupied,
         waiting,
     ])
@@ -113,7 +113,7 @@ pub fn read(frame: &mut TrapFrame, statistics: bool) {
         if fourth != 0 || fifth != 0 || sixth != 0 || (statistics && third != 0) {
             return Err(SystemCallStatus::InvalidArgument);
         }
-        if !statistics && first >= ACTOR_MAXIMUM as u64 {
+        if !statistics && first >= DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS as u64 {
             return Err(SystemCallStatus::InvalidArgument);
         }
         if capacity < required as u64 {
@@ -141,7 +141,7 @@ pub fn read(frame: &mut TrapFrame, statistics: bool) {
         value = if statistics {
             required as u64
         } else {
-            ACTOR_MAXIMUM as u64
+            DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS as u64
         };
         Ok(())
     })();

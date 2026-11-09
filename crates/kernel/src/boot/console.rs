@@ -44,14 +44,14 @@ pub fn start() -> Result<(), &'static str> {
     let genesis = spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default())
         .map_err(|_| "Genesis creation failed")?;
     let driver = spawn_kernel_actor(run_driver, None, Configuration::default())
-        .map_err(|_| "console driver creation failed")?;
+        .map_err(|_| "Console-Driver creation failed")?;
     let terminal = spawn_user_actor_with_argument(
         TERMINAL_PROGRAM,
         Some(genesis),
         Configuration::default(),
         pack_local_address(driver),
     )
-    .map_err(|_| "terminal creation failed")?;
+    .map_err(|_| "Terminal creation failed")?;
     crate::information!(
         EarlyConsole,
         "Userland started: Genesis {genesis}, Terminal {terminal}, Console-Driver {driver}"

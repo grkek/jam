@@ -5,10 +5,9 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use foundation::run_queue::RunQueue;
+use foundation::{resource_budget::DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS, run_queue::RunQueue};
 
 use crate::{
-    actors::table::ACTOR_MAXIMUM,
     architecture::aarch64::processor::{read_current_core_index, write_current_core_index},
     synchronization::spin_lock::SpinLock,
 };
@@ -23,7 +22,7 @@ pub const NO_ACTOR: usize = usize::MAX;
 pub struct CoreLocal {
     core_index: usize,
     is_online: AtomicBool,
-    run_queue: SpinLock<RunQueue<ACTOR_MAXIMUM>>,
+    run_queue: SpinLock<RunQueue<DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS>>,
     current_slot_index: AtomicUsize,
     idle_frame_address: AtomicUsize,
     tick_count: AtomicU64,
@@ -55,7 +54,7 @@ impl CoreLocal {
 
     /// Actors waiting to run on this core.
     #[must_use]
-    pub const fn run_queue(&self) -> &SpinLock<RunQueue<ACTOR_MAXIMUM>> {
+    pub const fn run_queue(&self) -> &SpinLock<RunQueue<DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS>> {
         &self.run_queue
     }
 
