@@ -212,9 +212,13 @@ fn after_bootstrap(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> !
     power_off_or_park(conduit)
 }
 
-/// Without it, stay alive. This is where the steward and Genesis will start later.
+/// Starts Genesis, the terminal, and the temporary polling console driver.
 #[cfg(not(feature = "stress"))]
-fn after_bootstrap(_conduit: Option<PowerStateCoordinationInterfaceConduit>) -> ! {
+fn after_bootstrap(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> ! {
+    if let Err(reason) = super::console::start() {
+        error!(EarlyConsole, "Userland bootstrap failed: {reason}");
+        power_off_or_park(conduit);
+    }
     loop {
         processor::wait_for_event();
     }

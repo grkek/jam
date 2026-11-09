@@ -194,6 +194,10 @@ pub enum SystemCall {
     /// owner. The kernel performs the required cache maintenance and ordering.
     /// Synchronization does not itself wait for device transfer completion.
     DirectMemoryAccessSynchronize = 33,
+
+    /// Read diagnostic frame, message-pool, core, and actor counters.
+    /// Register and record layouts are defined in `observation`.
+    ReadStatistics = 34,
 }
 
 /// A system call number the kernel does not recognise.
@@ -205,7 +209,7 @@ pub struct UnknownSystemCall {
 
 impl SystemCall {
     /// Every system call, in numeric order.
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 35] = [
         Self::SpawnActor,
         Self::TerminateActor,
         Self::WatchActor,
@@ -240,6 +244,7 @@ impl SystemCall {
         Self::DirectMemoryAccessAllocate,
         Self::DirectMemoryAccessRelease,
         Self::DirectMemoryAccessSynchronize,
+        Self::ReadStatistics,
     ];
 
     /// The number placed in the system call register.

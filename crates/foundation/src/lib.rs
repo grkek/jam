@@ -32,3 +32,6 @@ mod wire_bytes;
 
 /// Register and record conventions for local actor messaging.
 pub mod messaging;
+
+pub mod console;
+pub mod observation;

@@ -84,6 +84,7 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "foundation",
+ "pl011_console",
 ]
 
 [[package]]
@@ -132,6 +133,14 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "terminal"
+version = "0.1.0"
+dependencies = [
+ "foundation",
+ "runtime",
 ]
 
 [[package]]

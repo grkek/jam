@@ -34,7 +34,7 @@ fn run() -> ! {
 
 /// Tag nobody sends, so waiting on it never completes.
 #[cfg(not(feature = "stress"))]
-const IDLE_TAG: foundation::stress::Tag = 0xdead;
+const IDLE_TAG: u64 = 0xdead;
 
 /// Waits for messages forever; there is nothing to bootstrap yet.
 #[cfg(not(feature = "stress"))]
@@ -47,7 +47,7 @@ fn run() -> ! {
             tag: Some(IDLE_TAG),
             ..MessageSelector::default()
         };
-        let _ = inbox::await_matching(selector, &mut record);
+        inbox::await_matching(selector, &mut record).unwrap_or_else(|_| fail());
     }
 }
 

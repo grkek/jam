@@ -2,3 +2,5 @@
 
 pub mod delivery;
 pub mod staging_queue;
+
+pub mod kernel_inbox;

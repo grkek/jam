@@ -128,6 +128,7 @@ pub fn spawn_kernel_actor(
 fn spawn_user(
     parent_address: Option<LocalAddress>,
     configuration: Configuration,
+    initial_argument: u64,
     build_image: impl FnOnce(&mut FrameAllocator, u64) -> Result<UserImage, UserMapError>,
 ) -> Result<LocalAddress, SpawnError> {
     for (slot_index, slot) in ACTOR_TABLE.iter().enumerate() {
@@ -195,7 +196,8 @@ fn spawn_user(
         };
 
         // Prepare the initial EL0 execution context.
-        let Some(frame_address) = prepare_first_user_frame(slot_index, entry_point, stack_top)
+        let Some(frame_address) =
+            prepare_first_user_frame(slot_index, entry_point, stack_top, initial_argument)
         else {
             let _ = with_frame_allocator(|frame_allocator| address_space.destroy(frame_allocator));
             drop(control_block);
@@ -262,9 +264,25 @@ pub fn spawn_user_actor(
     parent_address: Option<LocalAddress>,
     configuration: Configuration,
 ) -> Result<LocalAddress, SpawnError> {
+    spawn_user_actor_with_argument(program, parent_address, configuration, 0)
+}
+
+/// Starts a known ELF with a kernel-authenticated scalar in its initial x0.
+/// The value is installed before the actor becomes runnable; it is not obtained
+/// from an unauthenticated first inbox message.
+///
+/// # Errors
+/// Returns the same image, stack, and allocation errors as `spawn_user_actor`.
+pub fn spawn_user_actor_with_argument(
+    program: &'static [u8],
+    parent_address: Option<LocalAddress>,
+    configuration: Configuration,
+    initial_argument: u64,
+) -> Result<LocalAddress, SpawnError> {
     spawn_user(
         parent_address,
         configuration,
+        initial_argument,
         |frame_allocator, private_value| {
             let (address_space, entry_point) =
                 build_elf_user_address_space(frame_allocator, private_value, program)?;
@@ -288,6 +306,7 @@ pub fn spawn_raw_user_actor(
     spawn_user(
         parent_address,
         configuration,
+        0,
         |frame_allocator, private_value| {
             let address_space = build_user_address_space(frame_allocator, private_value, program)?;
             Ok((address_space, TEST_CODE_ADDRESS, user_stack_top()))

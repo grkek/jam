@@ -5,6 +5,7 @@ members = [
     "crates/kernel",
     "crates/runtime",
     "services/genesis",
+    "services/terminal",
     "services/registry",
     "services/observatory",
     "services/distribution",

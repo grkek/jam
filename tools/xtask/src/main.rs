@@ -5,17 +5,19 @@
 //! scripts only configure compilation; they never invoke this tool or Cargo.
 
 use std::{
-    env, fs,
+    env,
     ffi::OsString,
+    fs,
     path::{Path, PathBuf},
     process::{Command, ExitCode},
 };
 
 /// Workspace packages checked for the bare-metal architecture.
-const BARE_METAL_PACKAGES: [&str; 8] = [
+const BARE_METAL_PACKAGES: [&str; 9] = [
     "kernel",
     "runtime",
     "genesis",
+    "terminal",
     "registry",
     "observatory",
     "distribution",
@@ -195,6 +197,10 @@ fn cargo_build(root: &Path, package: &str, options: &Options, features: &[&str])
     command.arg("--target-dir").arg(root.join("target"));
     if package == "kernel" {
         command.env("GENESIS_ELF_PATH", genesis_program_path(root, options));
+        command.env(
+            "TERMINAL_ELF_PATH",
+            genesis_program_path(root, options).with_file_name("terminal"),
+        );
     }
     if options.release {
         command.arg("--release");
@@ -228,9 +234,11 @@ fn find_object_copy() -> Result<PathBuf, String> {
             }
         }
     }
-    Err("no objcopy found: run `rustup component add llvm-tools` and \
+    Err(
+        "no objcopy found: run `rustup component add llvm-tools` and \
          `cargo install cargo-binutils`"
-        .to_string())
+            .to_string(),
+    )
 }
 
 /// Checks that a firmware checkout contains every required boot file.
@@ -368,6 +376,10 @@ fn build_board(root: &Path, board: Board, options: &Options) -> Result<PathBuf, 
     println!("== building for {}", board.name());
     build_genesis(root, options)?;
     run_checked(
+        &mut cargo_build(root, "terminal", options, &[]),
+        "building terminal",
+    )?;
+    run_checked(
         &mut cargo_build(root, "kernel", options, &options.kernel_features(board)),
         "building the kernel",
     )?;
@@ -391,7 +403,9 @@ fn build_board(root: &Path, board: Board, options: &Options) -> Result<PathBuf, 
 
 /// Builds the selected board, or every board.
 fn build(root: &Path, options: &Options) -> Result<(), String> {
-    let boards: Vec<Board> = options.board.map_or(Board::ALL.to_vec(), |board| vec![board]);
+    let boards: Vec<Board> = options
+        .board
+        .map_or(Board::ALL.to_vec(), |board| vec![board]);
     for board in boards {
         let output = build_board(root, board, options)?;
         println!("   output: {}", output.display());
@@ -440,7 +454,11 @@ fn run_raspberry_pi_4(root: &Path, options: &Options) -> Result<(), String> {
 /// Genesis must match the kernel: the kernel's stress plan sends bootstrap messages
 /// that only the stress build of Genesis consumes.
 fn build_genesis(root: &Path, options: &Options) -> Result<(), String> {
-    let features: &[&str] = if options.stress { &[STRESS_FEATURE] } else { &[] };
+    let features: &[&str] = if options.stress {
+        &[STRESS_FEATURE]
+    } else {
+        &[]
+    };
 
     run_checked(
         &mut cargo_build(root, "genesis", options, features),
@@ -454,7 +472,7 @@ fn build_genesis(root: &Path, options: &Options) -> Result<(), String> {
             genesis_program.display()
         ));
     }
-    
+
     Ok(())
 }
 
@@ -512,7 +530,13 @@ fn check(root: &Path, options: &Options) -> Result<(), String> {
     )?;
 
     build_genesis(root, options)?;
-    let boards = options.board.map_or(Board::ALL.to_vec(), |board| vec![board]);
+    run_checked(
+        &mut cargo_build(root, "terminal", options, &[]),
+        "building terminal",
+    )?;
+    let boards = options
+        .board
+        .map_or(Board::ALL.to_vec(), |board| vec![board]);
     for board in boards {
         for stress in [false, true] {
             let mut command = Command::new(cargo_program());
@@ -520,7 +544,11 @@ fn check(root: &Path, options: &Options) -> Result<(), String> {
                 .current_dir(root)
                 .args(["clippy", "--target", TARGET_TRIPLE, "--target-dir"])
                 .arg(root.join("target"))
-                .env("GENESIS_ELF_PATH", genesis_program_path(root, options));
+                .env("GENESIS_ELF_PATH", genesis_program_path(root, options))
+                .env(
+                    "TERMINAL_ELF_PATH",
+                    genesis_program_path(root, options).with_file_name("terminal"),
+                );
             for package in BARE_METAL_PACKAGES {
                 command.args(["--package", package]);
             }

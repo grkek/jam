@@ -22,7 +22,10 @@ const ELF_VERSION_INDEX: usize = 6;
 
 const PAGE_SIZE: u64 = PAGE_BYTE_COUNT as u64;
 const USER_VIRTUAL_ADDRESS_LIMIT: u64 = 1 << 39;
-const ELF_USER_STACK_VIRTUAL_ADDRESS: usize = 0x0000_007f_ffff_0000;
+const ELF_USER_STACK_PAGE_COUNT: usize = 4;
+const ELF_USER_STACK_TOP: usize = 0x0000_007f_ffff_1000;
+const ELF_USER_STACK_VIRTUAL_ADDRESS: usize =
+    ELF_USER_STACK_TOP - ELF_USER_STACK_PAGE_COUNT * PAGE_BYTE_COUNT;
 
 const ELF_CLASS_64: u8 = 2;
 const ELF_DATA_LITTLE_ENDIAN: u8 = 1;
@@ -212,7 +215,7 @@ fn validate_elf(program: &[u8]) -> Result<ElfHeader, UserMapError> {
     }
 
     let stack_start = ELF_USER_STACK_VIRTUAL_ADDRESS as u64;
-    let stack_end = stack_start + PAGE_SIZE;
+    let stack_end = ELF_USER_STACK_TOP as u64;
     let mut found_loadable_segment = false;
     let mut entry_is_file_backed_executable = false;
 
@@ -430,15 +433,18 @@ fn map_segments_and_stack(
         }
     }
 
-    user_memory::map_user_region(
-        frame_allocator,
-        address_space,
-        ELF_USER_STACK_VIRTUAL_ADDRESS,
-        PAGE_BYTE_COUNT,
-        UserAccess::ReadWrite,
-        false,
-        &[],
-    )
+    for page_index in 0..ELF_USER_STACK_PAGE_COUNT {
+        user_memory::map_user_region(
+            frame_allocator,
+            address_space,
+            ELF_USER_STACK_VIRTUAL_ADDRESS + page_index * PAGE_BYTE_COUNT,
+            PAGE_BYTE_COUNT,
+            UserAccess::ReadWrite,
+            false,
+            &[],
+        )?;
+    }
+    Ok(())
 }
 
 /// Validates and maps a statically linked AArch64 ELF64 executable and a one-page user stack.
@@ -457,7 +463,7 @@ pub fn build_elf_user_address_space(
     let header = validate_elf(program)?;
 
     // Fail early on a clearly oversized image. Page tables need frames too, so this is a floor.
-    let mut requested_page_count = 2_u64; // the private page and the stack
+    let mut requested_page_count = 1 + ELF_USER_STACK_PAGE_COUNT as u64; // private page + stack
     for index in 0..usize::from(header.program_header_count) {
         let segment = read_program_header(program, &header, index)?;
         if segment.segment_type != PROGRAM_HEADER_TYPE_LOAD || segment.memory_size == 0 {
@@ -489,7 +495,7 @@ pub fn build_elf_user_address_space(
 /// The top of the one-page stack that `build_elf_user_address_space` maps.
 #[must_use]
 pub const fn elf_user_stack_top() -> usize {
-    ELF_USER_STACK_VIRTUAL_ADDRESS + PAGE_BYTE_COUNT
+    ELF_USER_STACK_TOP
 }
 
 /// Builds an address space for a tiny raw-code program, kept for the self-tests. Not an ELF loader.
