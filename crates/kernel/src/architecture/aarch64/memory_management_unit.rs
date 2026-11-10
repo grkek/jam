@@ -10,6 +10,27 @@ const TCR_LOWER_HALF_WALKS_DISABLED: u64 = 1 << 7;
 /// Where `TTBR0_EL1` keeps the address space identifier.
 const ADDRESS_SPACE_IDENTIFIER_SHIFT: u64 = 48;
 
+/// Most actor slots the processor can tell apart, from its address-space identifier width.
+///
+/// Slot `n` uses identifier `n + 1`, and identifier zero is never handed out.
+#[must_use]
+pub(crate) fn actor_slot_ceiling() -> usize {
+    let features: u64;
+    // SAFETY: ID_AA64MMFR0_EL1 is readable at EL1 and reading it has no side effects.
+    unsafe {
+        core::arch::asm!("mrs {}, id_aa64mmfr0_el1", out(reg) features,
+            options(nomem, nostack, preserves_flags));
+    }
+
+    // ASIDBits is bits [7:4]: 0b0000 is 8 bits, 0b0010 is 16 bits.
+    let identifier_bit_count = match (features >> 4) & 0xf {
+        0b0010 => 16,
+        _ => 8,
+    };
+
+    (1_usize << identifier_bit_count) - 1
+}
+
 /// Points `TTBR1_EL1` at `root_table_address` and turns off lower-half translation on this core.
 ///
 /// The tables must map the running code, the stack, and the UART exactly as the boot tables do,

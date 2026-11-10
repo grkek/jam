@@ -8,6 +8,7 @@
 
 use crate::{
     actors::{
+        divider::default_configuration,
         inbox::MessageMetadata,
         table::{spawn_kernel_actor, spawn_user_actor, spawn_user_actor_with_argument},
     },
@@ -17,10 +18,7 @@ use crate::{
     system_calls::actor_calls::{current_address, pack_local_address},
 };
 use core::sync::atomic::{AtomicU64, Ordering};
-use foundation::{
-    address::LocalAddress, configuration::Configuration, console,
-    system_call_status::SystemCallStatus,
-};
+use foundation::{address::LocalAddress, console, system_call_status::SystemCallStatus};
 
 static TERMINAL_ADDRESS: AtomicU64 = AtomicU64::new(0);
 /// Terminal ELF built independently from Genesis by xtask.
@@ -30,6 +28,7 @@ static TERMINAL_PROGRAM: &[u8] = include_bytes!(env!("TERMINAL_ELF_PATH"));
 fn address(packed: u64) -> LocalAddress {
     let bytes = packed.to_le_bytes();
     let (slot, generation) = bytes.split_at(4);
+
     LocalAddress::new(
         u32::from_le_bytes(slot.try_into().unwrap_or([0; 4])),
         u32::from_le_bytes(generation.try_into().unwrap_or([0; 4])),
@@ -41,22 +40,27 @@ fn address(packed: u64) -> LocalAddress {
 /// # Errors
 /// Returns an actor-creation failure description.
 pub fn start() -> Result<(), &'static str> {
-    let genesis = spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default())
+    let genesis = spawn_user_actor(EL0_GENESIS_PROGRAM, None, default_configuration())
         .map_err(|_| "Genesis creation failed")?;
-    let driver = spawn_kernel_actor(run_driver, None, Configuration::default())
+
+    let driver = spawn_kernel_actor(run_driver, None, default_configuration())
         .map_err(|_| "Console-Driver creation failed")?;
+
     let terminal = spawn_user_actor_with_argument(
         TERMINAL_PROGRAM,
         Some(genesis),
-        Configuration::default(),
+        default_configuration(),
         pack_local_address(driver),
     )
     .map_err(|_| "Terminal creation failed")?;
+
     crate::information!(
         EarlyConsole,
         "Userland started: Genesis {genesis}, Terminal {terminal}, Console-Driver {driver}"
     );
+
     TERMINAL_ADDRESS.store(pack_local_address(terminal), Ordering::Release);
+
     Ok(())
 }
 

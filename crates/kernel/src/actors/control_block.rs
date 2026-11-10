@@ -9,7 +9,7 @@ use crate::{
 
 /// Where an actor is in its life.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ActorState {
+pub enum State {
     /// The slot is unused.
     Free,
     /// The actor is ready and waits in a run queue.
@@ -29,7 +29,7 @@ pub enum ActorState {
 #[allow(dead_code)]
 pub struct ControlBlock {
     /// Where the actor is in its life.
-    pub state: ActorState,
+    pub state: State,
     /// Changes every time the slot is reused, so a stale address reaches no one.
     pub generation_counter: u32,
     /// Who spawned the actor. `None` for actors the kernel starts itself.
@@ -60,7 +60,7 @@ pub struct ControlBlock {
 impl ControlBlock {
     /// A free actor-table slot with no allocated resources.
     pub const EMPTY: Self = Self {
-        state: ActorState::Free,
+        state: State::Free,
         generation_counter: 1,
         parent_address: None,
         configuration: None,
@@ -73,4 +73,12 @@ impl ControlBlock {
         pending_message_releases: 0,
         dynamic_memory_page_count: 0,
     };
+
+    /// Changes the actor's state and updates diagnostic accounting.
+    ///
+    /// The caller must hold this control block's exclusive lock.
+    pub fn transition_to(&mut self, next_state: State) {
+        super::snapshot::record_transition(self.state, next_state);
+        self.state = next_state;
+    }
 }

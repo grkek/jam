@@ -7,7 +7,7 @@
 
 use crate::{
     actors::{
-        control_block::ActorState,
+        control_block::State,
         inbox::{CompleteResult, MessageMetadata, ReceiveResult, ReceiveSelector},
         message_storage::MESSAGE_POOL,
         table::with_control_block,
@@ -22,7 +22,7 @@ use foundation::address::LocalAddress;
 pub fn receive(output: &mut [u8]) -> Option<(MessageMetadata<LocalAddress>, usize)> {
     let slot = current_core_local()?.current_slot_index();
     let selected = with_control_block(slot, |actor| {
-        if actor.state != ActorState::Running {
+        if actor.state != State::Running {
             return None;
         }
         let inbox = actor.inbox.as_mut()?;

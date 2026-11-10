@@ -1,21 +1,25 @@
 //! The table of every actor on this node.
+//!
+//! The table is built at boot from physical frames, so its size follows the machine's memory.
+//! Each chunk is one frame of control blocks; a paged directory points at the chunks.
 
-use foundation::{
-    address::LocalAddress, configuration::Configuration,
-    resource_budget::DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS,
-};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
-use super::control_block::{ActorState, ControlBlock};
+use foundation::{address::LocalAddress, configuration::Configuration};
+
+use super::control_block::{State, ControlBlock};
 use crate::{
-    actors::{inbox::Inbox, message_storage::ACTOR_INBOX_BYTE_BUDGET},
+    actors::{divider::system_limit, inbox::Inbox},
     architecture::aarch64::{
         early_console::EarlyConsole, memory_management_unit::invalidate_address_space_identifier,
     },
     error,
     memory::{
         address_space::AddressSpace,
+        address_translation::physical_to_virtual,
         frame_allocator::{FrameAllocator, with_frame_allocator},
         kernel_stack::{prepare_first_frame, prepare_first_user_frame},
+        paged_directory::{DirectoryError, PagedDirectory},
         private_page::{PRIVATE_VALUE_STRIDE, build_address_space_with_private_page},
         user_memory::{TEST_CODE_ADDRESS, UserMapError},
         user_program::{
@@ -27,8 +31,50 @@ use crate::{
     synchronization::spin_lock::SpinLock,
 };
 
-static ACTOR_TABLE: [SpinLock<ControlBlock>; DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS] =
-    [const { SpinLock::new(ControlBlock::EMPTY) }; DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS];
+/// One slot of the actor table.
+type Slot = SpinLock<ControlBlock>;
+
+const FRAME_BYTE_COUNT: usize = 4096;
+
+/// Bytes one slot occupies. The system limits count this against memory.
+pub const ACTOR_SLOT_BYTE_COUNT: usize = size_of::<Slot>();
+
+/// A chunk holds every slot that fits in one frame, or a single slot spanning several frames.
+const SLOTS_PER_CHUNK: usize = if ACTOR_SLOT_BYTE_COUNT <= FRAME_BYTE_COUNT {
+    FRAME_BYTE_COUNT / ACTOR_SLOT_BYTE_COUNT
+} else {
+    1
+};
+
+/// Physically adjacent frames behind one chunk.
+const FRAMES_PER_CHUNK: usize =
+    (SLOTS_PER_CHUNK * ACTOR_SLOT_BYTE_COUNT).div_ceil(FRAME_BYTE_COUNT);
+
+const _: () = assert!(
+    align_of::<Slot>() <= FRAME_BYTE_COUNT,
+    "a control block must not need more than frame alignment"
+);
+
+/// Base address of every chunk. The chunks themselves come from the frame allocator.
+static CHUNK_DIRECTORY: PagedDirectory = PagedDirectory::new();
+
+/// Number of slots that exist. Zero until the table is fully built.
+static SLOT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Why the actor table could not be built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableError {
+    /// The table was already built.
+    AlreadyInitialised,
+    /// No slots were requested.
+    Empty,
+    /// The chunk directory could not be built.
+    Directory(DirectoryError),
+    /// The physical frame allocator ran out of frames.
+    OutOfFrames,
+    /// The frame allocator did not hand out adjacent frames for a chunk.
+    FramesNotContiguous,
+}
 
 /// Why an actor could not be spawned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,10 +87,114 @@ pub enum SpawnError {
     OutOfMemory,
     /// The ELF executable is invalid, unsupported, or has an invalid mapping.
     InvalidExecutable,
+    /// The actor's resource budget exceeds the system ceiling.
+    BudgetExceedsCeiling,
 }
 
 /// What a user actor needs to start: its address space, its entry point, and its stack top.
 type UserImage = (AddressSpace, usize, usize);
+
+/// Takes the frames of one chunk and returns the address of the first.
+///
+/// Boot runs before the allocator is fragmented, so consecutive allocations are expected to
+/// be adjacent. The check turns a violated assumption into a boot error instead of corruption.
+fn allocate_chunk_frames(frame_allocator: &mut FrameAllocator) -> Result<usize, TableError> {
+    let first_frame = frame_allocator
+        .allocate_frame()
+        .ok_or(TableError::OutOfFrames)?;
+
+    for frame_offset in 1..FRAMES_PER_CHUNK {
+        let frame = frame_allocator
+            .allocate_frame()
+            .ok_or(TableError::OutOfFrames)?;
+        if frame != first_frame + frame_offset * FRAME_BYTE_COUNT {
+            return Err(TableError::FramesNotContiguous);
+        }
+    }
+
+    Ok(first_frame)
+}
+
+/// Builds the actor table with `slot_count` free slots and returns how many frames it took.
+///
+/// Call once at boot, while the caller still owns the frame allocator and before the first spawn.
+/// Frames already taken are not returned on failure, because boot treats that as fatal.
+///
+/// # Errors
+///
+/// Returns [`TableError`] when the table already exists, when `slot_count` is zero,
+/// when the directory cannot be built, or when the frame allocator cannot supply the chunks.
+pub fn initialise_actor_table(
+    frame_allocator: &mut FrameAllocator,
+    slot_count: usize,
+) -> Result<usize, TableError> {
+    if SLOT_COUNT.load(Ordering::Acquire) != 0 {
+        return Err(TableError::AlreadyInitialised);
+    }
+    if slot_count == 0 {
+        return Err(TableError::Empty);
+    }
+
+    let chunk_count = slot_count.div_ceil(SLOTS_PER_CHUNK);
+    let directory_frame_count = CHUNK_DIRECTORY
+        .initialise(frame_allocator, chunk_count)
+        .map_err(TableError::Directory)?;
+
+    for chunk_index in 0..chunk_count {
+        let frame_address = allocate_chunk_frames(frame_allocator)?;
+        let chunk = physical_to_virtual(frame_address) as *mut Slot;
+
+        // The last chunk may be partly unused; the unused slots are never reached.
+        for offset in 0..SLOTS_PER_CHUNK {
+            // SAFETY: The frames are exclusively owned here, adjacent, large enough for
+            // SLOTS_PER_CHUNK slots, and aligned for a slot (checked above).
+            unsafe { chunk.add(offset).write(SpinLock::new(ControlBlock::EMPTY)) };
+        }
+
+        CHUNK_DIRECTORY.set(chunk_index, chunk as usize);
+    }
+
+    // Publish last, so anyone who sees a nonzero count also sees every chunk.
+    SLOT_COUNT.store(slot_count, Ordering::Release);
+
+    Ok(directory_frame_count + chunk_count * FRAMES_PER_CHUNK)
+}
+
+/// Number of slots in the actor table. Zero before [`initialise_actor_table`] has finished.
+#[must_use]
+pub fn actor_table_length() -> usize {
+    SLOT_COUNT.load(Ordering::Acquire)
+}
+
+/// The slot at `slot_index`, or `None` when it lies outside the table.
+fn actor_slot(slot_index: usize) -> Option<&'static Slot> {
+    if slot_index >= actor_table_length() {
+        return None;
+    }
+
+    let chunk = CHUNK_DIRECTORY.get(slot_index / SLOTS_PER_CHUNK)? as *const Slot;
+
+    // SAFETY: The index is below the published slot count, so this chunk was fully
+    // initialised before publication. Chunks are never freed or moved.
+    Some(unsafe { &*chunk.add(slot_index % SLOTS_PER_CHUNK) })
+}
+
+/// Rejects a configuration whose budget is above the ceiling of this boot.
+fn check_budget(configuration: &Configuration) -> Result<(), SpawnError> {
+    if configuration
+        .resource_budget
+        .fits_within(system_limit().budget)
+    {
+        Ok(())
+    } else {
+        Err(SpawnError::BudgetExceedsCeiling)
+    }
+}
+
+/// The inbox byte budget the actor was configured with.
+fn inbox_byte_budget(configuration: &Configuration) -> usize {
+    usize::try_from(configuration.resource_budget.inbox_byte_budget).unwrap_or(usize::MAX)
+}
 
 /// Starts an actor at `entry_point` in kernel mode, in its own address space.
 ///
@@ -53,17 +203,22 @@ type UserImage = (AddressSpace, usize, usize);
 ///
 /// # Errors
 ///
-/// Returns [`SpawnError`] when no actor-table slot, initial kernel stack,
-/// or address-space memory is available.
+/// Returns [`SpawnError`] when the budget exceeds the system ceiling, or when no
+/// actor-table slot, initial kernel stack, or address-space memory is available.
 pub fn spawn_kernel_actor(
     entry_point: extern "C" fn() -> !,
     parent_address: Option<LocalAddress>,
     configuration: Configuration,
 ) -> Result<LocalAddress, SpawnError> {
-    for (slot_index, slot) in ACTOR_TABLE.iter().enumerate() {
+    check_budget(&configuration)?;
+
+    for slot_index in 0..actor_table_length() {
+        let Some(slot) = actor_slot(slot_index) else {
+            break;
+        };
         let mut control_block = slot.lock();
 
-        if control_block.state != ActorState::Free {
+        if control_block.state != State::Free {
             continue;
         }
 
@@ -92,7 +247,7 @@ pub fn spawn_kernel_actor(
         invalidate_address_space_identifier(address_space_identifier);
 
         // initialise the actor's resources before making it runnable.
-        control_block.inbox = Some(Inbox::new(address, ACTOR_INBOX_BYTE_BUDGET));
+        control_block.inbox = Some(Inbox::new(address, inbox_byte_budget(&configuration)));
 
         control_block.exit_cause = None;
         control_block.parent_address = parent_address;
@@ -102,12 +257,12 @@ pub fn spawn_kernel_actor(
         control_block.address_space_identifier = address_space_identifier;
 
         // Publish the fully initialised actor.
-        control_block.state = ActorState::Runnable;
+        control_block.transition_to(State::Runnable);
 
         // Release the control-block lock before scheduling.
         drop(control_block);
 
-        assert!(enqueue_runnable(slot_index), "run queue rejected new actor");
+        assert!(enqueue_runnable(slot_index), "Run queue rejected new actor");
 
         return Ok(address);
     }
@@ -123,18 +278,30 @@ pub fn spawn_kernel_actor(
 ///
 /// # Errors
 ///
-/// Returns [`SpawnError`] when no actor slot, kernel stack, or physical
-/// memory is available, or when the user image cannot be constructed.
+/// Returns [`SpawnError`] when the budget exceeds the system ceiling, when no actor
+/// slot, kernel stack, or physical memory is available, or when the user image
+/// cannot be constructed.
 fn spawn_user(
     parent_address: Option<LocalAddress>,
     configuration: Configuration,
     initial_argument: u64,
     build_image: impl FnOnce(&mut FrameAllocator, u64) -> Result<UserImage, UserMapError>,
 ) -> Result<LocalAddress, SpawnError> {
-    for (slot_index, slot) in ACTOR_TABLE.iter().enumerate() {
+    if let Err(spawn_error) = check_budget(&configuration) {
+        error!(
+            EarlyConsole,
+            "Actor creation failed: requested budget exceeds the system ceiling"
+        );
+        return Err(spawn_error);
+    }
+
+    for slot_index in 0..actor_table_length() {
+        let Some(slot) = actor_slot(slot_index) else {
+            break;
+        };
         let mut control_block = slot.lock();
 
-        if control_block.state != ActorState::Free {
+        if control_block.state != State::Free {
             continue;
         }
 
@@ -211,7 +378,7 @@ fn spawn_user(
         invalidate_address_space_identifier(address_space_identifier);
 
         // Initialise the inbox before publishing the actor.
-        control_block.inbox = Some(Inbox::new(address, ACTOR_INBOX_BYTE_BUDGET));
+        control_block.inbox = Some(Inbox::new(address, inbox_byte_budget(&configuration)));
 
         // Initialise actor lifecycle and execution resources.
         control_block.exit_cause = None;
@@ -228,7 +395,7 @@ fn spawn_user(
         );
 
         // Publish only after all initialization has completed.
-        control_block.state = ActorState::Runnable;
+        control_block.transition_to(State::Runnable);
 
         // Release the actor lock before interacting with the scheduler.
         drop(control_block);
@@ -257,8 +424,9 @@ fn spawn_user(
 /// # Errors
 ///
 /// Returns [`SpawnError::InvalidExecutable`] when the ELF is malformed or has an unsupported
-/// mapping, [`SpawnError::OutOfMemory`] when frame allocation fails, or the corresponding error
-/// when the table or stack is unavailable.
+/// mapping, [`SpawnError::OutOfMemory`] when frame allocation fails,
+/// [`SpawnError::BudgetExceedsCeiling`] when the budget is too large, or the corresponding
+/// error when the table or stack is unavailable.
 pub fn spawn_user_actor(
     program: &'static [u8],
     parent_address: Option<LocalAddress>,
@@ -272,7 +440,7 @@ pub fn spawn_user_actor(
 /// from an unauthenticated first inbox message.
 ///
 /// # Errors
-/// Returns the same image, stack, and allocation errors as `spawn_user_actor`.
+/// Returns the same image, stack, budget, and allocation errors as `spawn_user_actor`.
 pub fn spawn_user_actor_with_argument(
     program: &'static [u8],
     parent_address: Option<LocalAddress>,
@@ -297,7 +465,7 @@ pub fn spawn_user_actor_with_argument(
 ///
 /// # Errors
 ///
-/// Returns [`SpawnError`] when no slot or memory is available.
+/// Returns [`SpawnError`] when no slot or memory is available, or the budget is too large.
 pub fn spawn_raw_user_actor(
     program: &'static [u8],
     parent_address: Option<LocalAddress>,
@@ -319,7 +487,7 @@ pub fn with_control_block<Output>(
     slot_index: usize,
     operation: impl FnOnce(&mut ControlBlock) -> Output,
 ) -> Option<Output> {
-    let slot = ACTOR_TABLE.get(slot_index)?;
+    let slot = actor_slot(slot_index)?;
     let mut control_block = slot.lock();
     Some(operation(&mut control_block))
 }

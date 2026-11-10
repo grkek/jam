@@ -17,7 +17,7 @@ mod validation;
 use core::cmp::Reverse;
 use core::fmt::{self, Write};
 use foundation::{
-    address::LocalAddress, console, observation::ActorState, system_call_status::SystemCallStatus,
+    address::LocalAddress, console, observation::State, system_call_status::SystemCallStatus,
 };
 use runtime::{
     allocator::{self, Allocation},
@@ -599,7 +599,7 @@ impl Terminal {
                 }
             };
             let [_, packed, state, has_parent, parent, messages, charged, _] = record;
-            if state != ActorState::Free as u64 {
+            if state != State::Free as u64 {
                 let entry = Entry {
                     packed,
                     parent,
@@ -1117,7 +1117,7 @@ impl Terminal {
     #[inline(never)]
     fn version(&mut self) {
         self.print(format_args!(
-            "{BOLD}{CYAN}JAM terminal{RESET} {} {DIM}(EL0 actor, aarch64){RESET}\n",
+            "{BOLD}{CYAN}Terminal{RESET} {} {DIM}(EL0, aarch64){RESET}\n",
             env!("CARGO_PKG_VERSION")
         ));
     }
@@ -1282,7 +1282,7 @@ pub extern "C" fn _start(driver_identity: u64) -> ! {
         validation::run();
         terminal.write(b"Observation copy tests passed\n");
     }
-    terminal.write(b"\n\x1b[1;36mJAM terminal\x1b[0m\n\x1b[2mType help for commands.\x1b[0m\n");
+    terminal.write(b"\n\x1b[1;36mTerminal\x1b[0m\n\x1b[2mType help for commands.\x1b[0m\n");
     terminal.write(PROMPT);
     let mut editor = LineEditor::new();
     let mut input = [0_u8; console::MAXIMUM_INPUT_BYTE_COUNT];

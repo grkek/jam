@@ -49,7 +49,7 @@ pub enum FrameAllocatorInitialisationError {
 ///
 /// The first discovered RAM bank is the only one the bootstrap currently maps. Other banks
 /// are checked for overlap but not used until the kernel establishes their direct mappings.
-/// The bitmap is initialized in unreserved RAM beyond the kernel image, and all firmware,
+/// The bitmap is initialised in unreserved RAM beyond the kernel image, and all firmware,
 /// device-tree, kernel-image, and bitmap frames are marked unavailable.
 ///
 /// # Errors
@@ -109,7 +109,7 @@ pub fn initialise_frame_allocator(
     // SAFETY: `plan` has proved the selected pages are within the boot-mapped RAM bank and do
     // not overlap the kernel image, firmware reservations, or the device tree. They are not
     // shared by another allocator. The address is frame aligned, hence aligned for `u64`.
-    // We initialize exactly the word-count owned by this bitmap before creating the slice.
+    // We initialise exactly the word-count owned by this bitmap before creating the slice.
     let storage = unsafe {
         let pointer = physical_to_virtual(bitmap_physical_address) as *mut u64;
         core::ptr::write_bytes(pointer, 0, storage_word_count);

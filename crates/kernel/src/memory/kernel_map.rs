@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     architecture::aarch64::memory_management_unit::switch_kernel_translation_root,
-    scheduling::core_local::CORE_MAXIMUM,
+    scheduling::core_local::CORE_COUNT,
 };
 
 /// Every stack slice starts with one unmapped 4 KiB page.
@@ -95,7 +95,7 @@ fn align_up(address: usize, alignment: usize) -> usize {
 
 /// Replaces the coarse boot mappings with protected kernel translations.
 ///
-/// Every stack family contains `CORE_MAXIMUM` slices. The first page in each
+/// Every stack family contains `CORE_COUNT` slices. The first page in each
 /// slice is excluded from the page tables, so a downward-growing stack faults
 /// before it can continue into the preceding allocation.
 ///
@@ -171,12 +171,12 @@ pub fn enable_kernel_address_space(
         if bottom < memory_start
             || top > memory_end
             || bottom % PAGE_BYTE_COUNT != 0
-            || region_length % CORE_MAXIMUM != 0
+            || region_length % CORE_COUNT != 0
         {
             return Err(KernelMapError::MemoryRegionUnsupported);
         }
 
-        let stride = region_length / CORE_MAXIMUM;
+        let stride = region_length / CORE_COUNT;
 
         // A slice must contain at least one guard page and one usable page.
         if stride <= STACK_GUARD_BYTE_COUNT || stride % PAGE_BYTE_COUNT != 0 {
@@ -190,7 +190,7 @@ pub fn enable_kernel_address_space(
     let is_guard_page = |page_address: usize| {
         guard_regions.iter().any(|&(bottom, stride)| {
             page_address >= bottom
-                && page_address - bottom < CORE_MAXIMUM * stride
+                && page_address - bottom < CORE_COUNT * stride
                 && (page_address - bottom) % stride < STACK_GUARD_BYTE_COUNT
         })
     };
@@ -198,7 +198,7 @@ pub fn enable_kernel_address_space(
     // Fall back to 4 KiB mappings for any 2 MiB block containing a guard.
     let block_contains_guard = |block_address: usize| {
         guard_regions.iter().any(|&(bottom, stride)| {
-            (0..CORE_MAXIMUM).any(|core_index| {
+            (0..CORE_COUNT).any(|core_index| {
                 let guard_address = bottom + core_index * stride;
                 guard_address >= block_address && guard_address < block_address + BLOCK_BYTE_COUNT
             })
@@ -275,7 +275,7 @@ pub fn enable_kernel_address_space(
 
     // Inspect all four stack families to ensure no guard acquired a translation.
     for &(bottom, stride) in &guard_regions {
-        for core_index in 0..CORE_MAXIMUM {
+        for core_index in 0..CORE_COUNT {
             let guard_address = bottom + core_index * stride;
             assert!(
                 address_space

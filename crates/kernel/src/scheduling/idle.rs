@@ -4,7 +4,7 @@ use foundation::page_table_entry::PAGE_BYTE_COUNT;
 
 use crate::{
     architecture::aarch64::{exceptions::TrapFrame, processor},
-    scheduling::core_local::{CORE_MAXIMUM, core_locals},
+    scheduling::core_local::{CORE_COUNT, core_locals},
 };
 
 /// Size of each core's idle stack.
@@ -30,7 +30,7 @@ unsafe extern "C" {
 
 // Returns the mapped boundaries of a core's interrupt stack, excluding its guard page.
 fn interrupt_stack_bounds(core_index: usize) -> (usize, usize) {
-    assert!(core_index < CORE_MAXIMUM);
+    assert!(core_index < CORE_COUNT);
 
     let region_bottom = &raw const __interrupt_stacks_bottom as usize;
     let region_top = &raw const __interrupt_stacks_top as usize;
@@ -39,9 +39,9 @@ fn interrupt_stack_bounds(core_index: usize) -> (usize, usize) {
         .expect("Invalid interrupt-stack region");
 
     assert_eq!(region_bottom % PAGE_BYTE_COUNT, 0);
-    assert_eq!(region_byte_count % CORE_MAXIMUM, 0);
+    assert_eq!(region_byte_count % CORE_COUNT, 0);
 
-    let stride = region_byte_count / CORE_MAXIMUM;
+    let stride = region_byte_count / CORE_COUNT;
     assert!(stride > STACK_GUARD_BYTE_COUNT);
     assert_eq!(stride % PAGE_BYTE_COUNT, 0);
 
@@ -52,10 +52,10 @@ fn interrupt_stack_bounds(core_index: usize) -> (usize, usize) {
 
 /// Initializes interrupt-stack watermarks before other cores enable interrupts.
 pub fn initialise_interrupt_stack_tracking() {
-    for core_index in 0..CORE_MAXIMUM {
+    for core_index in 0..CORE_COUNT {
         let (stack_bottom, stack_top) = interrupt_stack_bounds(core_index);
 
-        // SAFETY: Only mapped, inactive interrupt-stack memory is initialized.
+        // SAFETY: Only mapped, inactive interrupt-stack memory is initialised.
         unsafe {
             core::ptr::write_bytes(
                 stack_bottom as *mut u8,
@@ -86,7 +86,7 @@ pub fn interrupt_stack_high_water_bytes(core_index: usize) -> (usize, usize) {
 
 // Returns the exclusive upper boundary of the linker-reserved idle stack.
 fn idle_stack_top(core_index: usize) -> usize {
-    assert!(core_index < CORE_MAXIMUM);
+    assert!(core_index < CORE_COUNT);
 
     let region_bottom = &raw const __idle_stacks_bottom as usize;
     let region_top = &raw const __idle_stacks_top as usize;
@@ -94,7 +94,7 @@ fn idle_stack_top(core_index: usize) -> usize {
     assert_eq!(region_bottom % PAGE_BYTE_COUNT, 0);
     assert_eq!(
         region_top.checked_sub(region_bottom),
-        Some(CORE_MAXIMUM * IDLE_STACK_STRIDE_BYTE_COUNT),
+        Some(CORE_COUNT * IDLE_STACK_STRIDE_BYTE_COUNT),
         "Invalid idle-stack region"
     );
 

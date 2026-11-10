@@ -23,7 +23,6 @@ pub mod page_table_entry;
 /// Physical frame ownership and reserved-memory planning for early bootstrap.
 pub mod physical_memory;
 pub mod resource_budget;
-pub mod run_queue;
 pub mod scroll;
 pub mod stress;
 pub mod system_call;

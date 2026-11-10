@@ -9,11 +9,11 @@
 //! actor lock. Dispatch drops the queue lock before claiming an actor.
 //! Actors marked `Exiting` are never dispatched or requeued.
 
-use foundation::{address::LocalAddress, resource_budget::DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS};
+use foundation::address::LocalAddress;
 
 use super::core_local::{CoreLocal, NO_ACTOR, core_locals, current_core_local};
 use crate::{
-    actors::{control_block::ActorState, table::with_control_block},
+    actors::{control_block::State, table::with_control_block},
     architecture::aarch64::{
         exceptions::TrapFrame,
         generic_timer::{rearm_tick, start_tick},
@@ -52,7 +52,7 @@ pub fn enqueue_runnable(slot_index: usize) -> bool {
         return false;
     };
     with_control_block(slot_index, |actor| {
-        if actor.state != ActorState::Runnable {
+        if actor.state != State::Runnable {
             return false;
         }
 
@@ -64,9 +64,9 @@ pub fn enqueue_runnable(slot_index: usize) -> bool {
             return false;
         };
 
-        let mut queue = core_local.run_queue().lock();
+        let mut queue = core_local.queue().lock();
 
-        if queue.length() >= DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS {
+        if queue.length() >= queue.capacity() {
             return false;
         }
 
@@ -84,7 +84,7 @@ pub fn enqueue_runnable(slot_index: usize) -> bool {
 /// drop an entry or deadlock with another simultaneous work-stealing attempt.
 /// Actor locks are never acquired while holding these queue locks.
 fn rebalance(core_local: &CoreLocal) {
-    let own_length = core_local.run_queue().lock().length();
+    let own_length = core_local.queue().lock().length();
     let mut busiest: Option<(&CoreLocal, usize)> = None;
 
     for other_core in core_locals() {
@@ -92,7 +92,7 @@ fn rebalance(core_local: &CoreLocal) {
             continue;
         }
 
-        let length = other_core.run_queue().lock().length();
+        let length = other_core.queue().lock().length();
 
         if busiest.is_none_or(|(_, longest)| length > longest) {
             busiest = Some((other_core, length));
@@ -113,8 +113,8 @@ fn rebalance(core_local: &CoreLocal) {
         (victim, core_local)
     };
 
-    let mut first_queue = first.run_queue().lock();
-    let mut second_queue = second.run_queue().lock();
+    let mut first_queue = first.queue().lock();
+    let mut second_queue = second.queue().lock();
 
     let (own_queue, victim_queue) = if core_local.core_index() < victim.core_index() {
         (&mut *first_queue, &mut *second_queue)
@@ -131,7 +131,7 @@ fn rebalance(core_local: &CoreLocal) {
 
     let transfer_count = ((victim_count - own_count) / 2)
         .min(STEAL_BATCH_MAXIMUM)
-        .min(DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS - own_count);
+        .min(victim_queue.capacity() - own_count);
 
     for _ in 0..transfer_count {
         let Some(entry) = victim_queue.pop_back() else {
@@ -139,14 +139,14 @@ fn rebalance(core_local: &CoreLocal) {
         };
         // We reserved capacity above while holding both run-queue locks.
         let inserted = own_queue.push_back(entry);
-        assert!(inserted, "reserved destination capacity before stealing");
+        assert!(inserted, "Reserved destination capacity before stealing");
     }
 }
 
 /// Atomically claims a queued actor only if its identity and state still match.
 fn claim_next_runnable(core_local: &CoreLocal) -> Option<(usize, usize, Option<(u64, u16)>)> {
     loop {
-        let address = core_local.run_queue().lock().pop_front()?;
+        let address = core_local.queue().lock().pop_front()?;
         let slot_index = address.slot_index() as usize;
 
         let claimed = with_control_block(slot_index, |actor| {
@@ -155,7 +155,7 @@ fn claim_next_runnable(core_local: &CoreLocal) -> Option<(usize, usize, Option<(
                 return None;
             }
 
-            if actor.state != ActorState::Runnable {
+            if actor.state != State::Runnable {
                 // The popped entry is gone; clear membership for this
                 // incarnation, including if the actor has become Exiting.
                 actor.queued = false;
@@ -175,12 +175,12 @@ fn claim_next_runnable(core_local: &CoreLocal) -> Option<(usize, usize, Option<(
 
             if !actor.queued || actor.saved_frame_address == 0 {
                 // Release builds: refuse to run it, but don't strand it silently.
-                actor.state = ActorState::Exiting;
+                actor.transition_to(State::Exiting);
                 return None;
             }
 
             actor.queued = false;
-            actor.state = ActorState::Running;
+            actor.transition_to(State::Running);
 
             let mapping = actor.address_space.as_ref().map(|space| {
                 (
@@ -272,15 +272,15 @@ fn schedule(core_local: &CoreLocal, interrupted_frame_address: usize) -> usize {
         let mut queue_was_full = false;
         let _ = with_control_block(current_slot, |actor| {
             actor.saved_frame_address = interrupted_frame_address;
-            if actor.state != ActorState::Running {
+            if actor.state != State::Running {
                 // Waiting and Exiting actors are never requeued.
                 return;
             }
             let Ok(slot_number) = u32::try_from(current_slot) else {
                 return;
             };
-            let mut queue = core_local.run_queue().lock();
-            if queue.length() >= DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS {
+            let mut queue = core_local.queue().lock();
+            if queue.length() >= queue.capacity() {
                 queue_was_full = true;
                 return;
             }
@@ -289,11 +289,11 @@ fn schedule(core_local: &CoreLocal, interrupted_frame_address: usize) -> usize {
             // and finish this actor. We remain on the interrupt stack.
             core_local.set_current_slot_index(NO_ACTOR);
             // Commit the saved frame *before* publishing its run queue entry.
-            actor.state = ActorState::Runnable;
+            actor.transition_to(State::Runnable);
             actor.queued = true;
             let inserted = queue.push_back(address);
 
-            assert!(inserted, "checked run queue capacity under lock");
+            assert!(inserted, "Checked run queue capacity under lock");
         });
         if queue_was_full {
             // The interrupted actor is still Running and never left the core.
@@ -340,9 +340,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_queue_entries_preserve_actor_generation() {
+    fn queue_entries_preserve_actor_generation() {
         let address = LocalAddress::new(17, 0xabcdef12);
-        let mut queue = foundation::run_queue::RunQueue::<1>::new();
+        let mut queue = foundation::queue::Queue::<1>::new();
         assert!(queue.push_back(address));
         assert_eq!(queue.pop_front(), Some(address));
     }
@@ -359,7 +359,7 @@ pub fn wake_inbox_actor(
 ) {
     use crate::architecture::aarch64::power_interface::halt_machine;
     if actor.generation_counter != token.actor_address().generation_counter()
-        || actor.state != ActorState::Waiting
+        || actor.state != State::Waiting
         || actor.queued
     {
         return;
@@ -370,14 +370,14 @@ pub fn wake_inbox_actor(
     let Some(inbox) = actor.inbox.as_mut() else {
         halt_machine();
     };
-    let mut queue = core.run_queue().lock();
-    if queue.length() >= DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS {
+    let mut queue = core.queue().lock();
+    if queue.length() >= queue.capacity() {
         halt_machine();
     }
     if !inbox.claim_wake(token) {
         return;
     }
-    actor.state = ActorState::Runnable;
+    actor.transition_to(State::Runnable);
     actor.queued = true;
     if !queue.push_back(token.actor_address()) {
         halt_machine();

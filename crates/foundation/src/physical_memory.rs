@@ -321,7 +321,7 @@ impl PhysicalMemoryPlan {
         self.managed_bank
     }
 
-    /// Returns the page-aligned physical region where the bitmap must be initialized.
+    /// Returns the page-aligned physical region where the bitmap must be initialised.
     #[must_use]
     pub const fn bitmap_storage(&self) -> PhysicalRegion {
         self.bitmap_storage

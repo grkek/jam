@@ -15,7 +15,7 @@ use core::fmt::Write;
 use foundation::{address::LocalAddress, cause::Cause};
 
 use super::{
-    control_block::ActorState,
+    control_block::State,
     message_cleanup::{begin_actor_message_exit, finish_actor_message_cleanup},
     message_storage::MESSAGE_POOL,
     table::with_control_block,
@@ -29,7 +29,7 @@ use crate::{
     error, information,
     memory::frame_allocator::with_frame_allocator,
     scheduling::{
-        core_local::{CORE_MAXIMUM, NO_ACTOR, core_locals, current_core_local},
+        core_local::{CORE_COUNT, NO_ACTOR, core_locals, current_core_local},
         scheduler::pick_next_after_finish,
     },
 };
@@ -82,12 +82,12 @@ extern "C" fn reclaim_callback(argument: usize) {
 
 /// Runs reclamation without consuming the interrupt stack.
 fn reclaim_on_dedicated_stack(address: LocalAddress, core_index: usize) {
-    assert!(core_index < CORE_MAXIMUM);
+    assert!(core_index < CORE_COUNT);
     assert!(!interrupts_enabled());
 
     let base = &raw const __reclamation_stacks_bottom as usize;
     let end = &raw const __reclamation_stacks_top as usize;
-    let stride = (end - base) / CORE_MAXIMUM;
+    let stride = (end - base) / CORE_COUNT;
     let stack_top = base + (core_index + 1) * stride;
 
     // SAFETY: The stack is permanent, 16-byte aligned, and exclusively
@@ -110,12 +110,12 @@ pub fn initialise_reclamation_stack_tracking() {
     let top = &raw const __reclamation_stacks_top as usize;
 
     assert!(top > bottom);
-    assert_eq!((top - bottom) % CORE_MAXIMUM, 0);
+    assert_eq!((top - bottom) % CORE_COUNT, 0);
 
-    let stride = (top - bottom) / CORE_MAXIMUM;
+    let stride = (top - bottom) / CORE_COUNT;
     assert!(stride > RECLAMATION_GUARD_BYTE_COUNT);
 
-    for core_index in 0..CORE_MAXIMUM {
+    for core_index in 0..CORE_COUNT {
         let stack_bottom = bottom + core_index * stride + RECLAMATION_GUARD_BYTE_COUNT;
 
         // SAFETY: These usable stacks are linker-reserved, mapped writable,
@@ -134,12 +134,12 @@ pub fn initialise_reclamation_stack_tracking() {
 ///
 /// Call only after reclamation has returned on the measured core.
 pub fn reclamation_stack_high_water_bytes(core_index: usize) -> (usize, usize) {
-    assert!(core_index < CORE_MAXIMUM);
+    assert!(core_index < CORE_COUNT);
 
     let bottom = &raw const __reclamation_stacks_bottom as usize;
     let top = &raw const __reclamation_stacks_top as usize;
 
-    let stride = (top - bottom) / CORE_MAXIMUM;
+    let stride = (top - bottom) / CORE_COUNT;
     let capacity = stride - RECLAMATION_GUARD_BYTE_COUNT;
     let stack_bottom = bottom + core_index * stride + RECLAMATION_GUARD_BYTE_COUNT;
     let stack_top = stack_bottom + capacity;
@@ -194,7 +194,7 @@ fn reclaim_exiting_actor(address: LocalAddress) {
     }
 
     let detached = with_control_block(slot_index, |actor| {
-        if actor.state != ActorState::Exiting
+        if actor.state != State::Exiting
             || actor.generation_counter != address.generation_counter()
             || actor.inbox.is_some()
             || actor.pending_message_releases != 0
@@ -235,7 +235,7 @@ fn reclaim_exiting_actor(address: LocalAddress) {
         });
         if released.is_none() {
             let _ = with_control_block(slot_index, |actor| {
-                if actor.state == ActorState::Exiting
+                if actor.state == State::Exiting
                     && actor.generation_counter == address.generation_counter()
                     && actor.address_space.is_none()
                 {
@@ -251,7 +251,7 @@ fn reclaim_exiting_actor(address: LocalAddress) {
     }
 
     let _ = with_control_block(slot_index, |actor| {
-        if actor.state != ActorState::Exiting
+        if actor.state != State::Exiting
             || actor.generation_counter != address.generation_counter()
             || actor.inbox.is_some()
             || actor.pending_message_releases != 0
@@ -268,7 +268,7 @@ fn reclaim_exiting_actor(address: LocalAddress) {
         actor.saved_frame_address = 0;
         actor.exit_cause = None;
         actor.dynamic_memory_page_count = 0;
-        actor.state = ActorState::Free;
+        actor.transition_to(State::Free);
     });
 }
 
@@ -311,7 +311,7 @@ pub fn end_current_actor(cause: Cause) -> Option<usize> {
         );
         return None;
     };
-    if state != ActorState::Running {
+    if state != State::Running {
         error!(
             EarlyConsole,
             "end_current_actor: core {core_index} slot {slot_index} gen {generation} state {state:?} queued {queued} (expected Running)"
@@ -329,7 +329,7 @@ pub fn end_current_actor(cause: Cause) -> Option<usize> {
     }
 
     let _ = with_control_block(slot_index, |actor| {
-        if actor.state == ActorState::Exiting
+        if actor.state == State::Exiting
             && actor.generation_counter == address.generation_counter()
         {
             actor.exit_cause = Some(cause);

@@ -364,6 +364,10 @@ impl<Descriptor, Sender: Copy + Eq, const CAPACITY: usize> Inbox<Descriptor, Sen
     pub const fn resident_bytes(&self) -> usize {
         self.resident_bytes
     }
+    /// Returns this inbox's configured maximum resident bytes.
+    pub const fn maximum_resident_bytes(&self) -> usize {
+        self.maximum_resident_bytes
+    }
     /// Returns whether this inbox no longer accepts messages.
     pub const fn is_closed(&self) -> bool {
         self.closed

@@ -13,7 +13,7 @@ KERNEL_PHYSICAL_BASE     = 0x40200000;
 KERNEL_OFFSET            = 0xFFFFFF8000000000;
 
 PAGE_SIZE                = 4096;
-CORE_COUNT               = 8;
+CORE_COUNT               = 16;
 
 BOOT_STACK_SIZE          = 65536;
 BOOT_GUARD_SIZE          = PAGE_SIZE;

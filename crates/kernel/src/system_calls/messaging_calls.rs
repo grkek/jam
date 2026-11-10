@@ -7,7 +7,7 @@
 use super::actor_calls::{current_address, pack_local_address};
 use crate::{
     actors::{
-        control_block::{ActorState, ControlBlock},
+        control_block::{State, ControlBlock},
         inbox::{
             CancelResult, CompleteResult, InboxWaitResult, MessageMetadata, ParkResult,
             ReceiveResult, ReceiveSelector,
@@ -15,7 +15,10 @@ use crate::{
         message_storage::MESSAGE_POOL,
         table::with_control_block,
     },
-    architecture::aarch64::{exceptions::TrapFrame, power_interface::halt_machine},
+    architecture::aarch64::{
+        exceptions::TrapFrame, memory_management_unit::actor_slot_ceiling,
+        power_interface::halt_machine,
+    },
     memory::user_copy::{copy_from_actor, copy_to_actor},
     messaging::delivery::{release_message, tell_actor as deliver_message},
     scheduling::{
@@ -29,7 +32,6 @@ use foundation::{
         INDEFINITE_WAIT, MATCH_CORRELATION, MATCH_SENDER, MATCH_TAG, MAXIMUM_PAYLOAD_BYTE_COUNT,
         MAXIMUM_RECORD_BYTE_COUNT, RECEIVED_HEADER_BYTE_COUNT, SELECTOR_FLAGS,
     },
-    resource_budget::DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS,
     system_call_status::SystemCallStatus,
 };
 
@@ -38,7 +40,7 @@ fn local_address(packed: u64) -> Result<LocalAddress, SystemCallStatus> {
     let slot = u32::try_from(packed & u64::from(u32::MAX))
         .map_err(|_| SystemCallStatus::MalformedAddress)?;
     let generation = u32::try_from(packed >> 32).map_err(|_| SystemCallStatus::MalformedAddress)?;
-    if slot as usize >= DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS {
+    if slot as usize >= actor_slot_ceiling() {
         return Err(SystemCallStatus::MalformedAddress);
     }
     Ok(LocalAddress::new(slot, generation))
@@ -59,7 +61,7 @@ fn with_caller<Output>(
     operation: impl FnOnce(&mut ControlBlock) -> Output,
 ) -> Output {
     with_control_block(address.slot_index() as usize, |actor| {
-        if actor.state != ActorState::Running
+        if actor.state != State::Running
             || actor.generation_counter != address.generation_counter()
         {
             halt_machine();
@@ -343,7 +345,7 @@ pub fn await_inbox(trap_frame: *mut TrapFrame) -> *mut TrapFrame {
                 // wake elsewhere and exit. Detach before publishing Waiting.
                 crate::architecture::aarch64::memory_management_unit::deactivate_lower_half();
                 core.set_current_slot_index(NO_ACTOR);
-                actor.state = ActorState::Waiting;
+                actor.transition_to(State::Waiting);
                 true
             }
             InboxWaitResult::Saturated | InboxWaitResult::IdentifierExhausted => {

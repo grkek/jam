@@ -1,8 +1,10 @@
 //! First Rust code executed on the boot core.
 
 use foundation::{
-    address::LocalAddress, device_tree::PowerStateCoordinationInterfaceConduit,
+    address::LocalAddress,
+    device_tree::PowerStateCoordinationInterfaceConduit,
     hardware_description::HardwareDescription,
+    resource_budget::{Capacity, Limit},
 };
 
 use super::{device_tree::load_device_tree, secondary_cores::start_secondary_cores};
@@ -12,17 +14,19 @@ use super::stress;
 
 use crate::{
     actors::{
+        divider,
         lifecycle::{initialise_reclamation_stack_tracking, reclamation_stack_high_water_bytes},
         message_pool::MessagePool,
         message_storage::{
-            ACTOR_INBOX_BYTE_BUDGET, ACTOR_INBOX_CAPACITY, MESSAGE_MAXIMUM_PAYLOAD_BYTES,
-            MESSAGE_POOL_CAPACITY,
+            ACTOR_INBOX_CAPACITY, MESSAGE_MAXIMUM_PAYLOAD_BYTES, MESSAGE_POOL_CAPACITY,
         },
+        table::{ACTOR_SLOT_BYTE_COUNT, initialise_actor_table},
     },
     architecture::aarch64::{
         early_console::EarlyConsole,
         exceptions::install_exception_vectors,
         interrupt_controller::initialise_distributor,
+        memory_management_unit::actor_slot_ceiling,
         power_interface, processor,
         time::{read_counter_value, record_boot_ticks},
     },
@@ -34,11 +38,12 @@ use crate::{
         },
         kernel_image::{kernel_image_end_address, kernel_image_start_address},
         kernel_map::enable_kernel_address_space,
+        kernel_stack::initialise_kernel_stacks,
         user_memory::run_user_mapping_self_test,
     },
     platform::current::initialise_console_hardware,
     scheduling::{
-        core_local::{CORE_MAXIMUM, register_current_core},
+        core_local::{CORE_COUNT, initialise_queues, register_current_core},
         idle::{initialise_interrupt_stack_tracking, install_idle_frames},
         scheduler::start_current_core_tick,
     },
@@ -66,7 +71,7 @@ fn power_off_or_park(conduit: Option<PowerStateCoordinationInterfaceConduit>) ->
     }
 }
 
-fn log_banner() {
+fn banner() {
     information!(
         EarlyConsole,
         concat!(
@@ -75,15 +80,28 @@ fn log_banner() {
             " (aarch64-unknown-none) #1 SMP"
         )
     );
-    information!(
-        EarlyConsole,
-        "Exception vector table installed successfully"
-    );
+
     information!(
         EarlyConsole,
         "Kernel executing in the upper half, kernel_main at {:#x}",
         kernel_main as usize
     );
+}
+
+/// Brings the boot core to the point where it can log, take exceptions, and idle.
+fn start_boot_core() {
+    install_exception_vectors();
+    record_boot_ticks(read_counter_value());
+    initialise_console_hardware();
+
+    if !register_current_core(0) {
+        // The device tree has not been read, so the power interface is not known yet.
+        fatal!(None, "Fatal: unable to register the current core: 0");
+    }
+
+    // Every core needs a real frame to resume when the run queue is empty.
+    install_idle_frames();
+    banner();
 }
 
 /// Logs what the device tree says about memory, reservations and CPUs.
@@ -125,6 +143,24 @@ fn report_hardware_description(hardware: &HardwareDescription) {
             "Dynamic reserved-memory requests are not allocated in Phase 2",
         );
     }
+}
+
+/// Logs the physical memory range the device tree describes.
+fn report_physical_memory(memory_base_address: u64, memory_byte_count: u64) {
+    information!(
+        EarlyConsole,
+        "Physical memory map: {:#x} to {:#x}, {} bytes ({} megabytes)",
+        memory_base_address,
+        memory_base_address + memory_byte_count,
+        memory_byte_count,
+        memory_byte_count / BYTES_PER_MEGABYTE
+    );
+    information!(
+        EarlyConsole,
+        "Kernel image occupies {:#x} to {:#x}",
+        kernel_image_start_address(),
+        kernel_image_end_address()
+    );
 }
 
 /// Allocates and releases frames to prove the allocator still works with the MMU on.
@@ -180,9 +216,104 @@ fn run_frame_allocator_self_test(frame_allocator: &mut FrameAllocator) {
     }
 }
 
+/// The bytes one queued message is charged against an inbox.
+fn message_charge_bytes() -> usize {
+    MessagePool::<(), MESSAGE_POOL_CAPACITY, MESSAGE_MAXIMUM_PAYLOAD_BYTES, 0>::message_charge::<
+        LocalAddress,
+    >()
+    .expect("charge")
+    .bytes()
+}
+
+/// Measures what this machine offers, so the limit follow the hardware instead of constants.
+fn measure_system_capacity(frame_allocator: &FrameAllocator) -> Capacity {
+    Capacity {
+        free_frame_count: frame_allocator.free_frame_count(),
+        actor_slot_byte_count: ACTOR_SLOT_BYTE_COUNT,
+        actor_slot_ceiling: actor_slot_ceiling(),
+        inbox_message_capacity: ACTOR_INBOX_CAPACITY,
+        message_pool_capacity: MESSAGE_POOL_CAPACITY,
+        message_charge_byte_count: message_charge_bytes(),
+    }
+}
+
+/// Derives the system limit and builds every table that holds one entry per actor slot.
+///
+/// The tables take their frames straight from the allocator, so this must run while the
+/// boot code still owns it, before it is installed for shared use.
+fn build_actor_storage(
+    frame_allocator: &mut FrameAllocator,
+    conduit: Option<PowerStateCoordinationInterfaceConduit>,
+) -> (Capacity, Limit) {
+    // The limits follow the memory left after the kernel has mapped itself.
+    let capacity = measure_system_capacity(frame_allocator);
+    let limit = match Limit::derive(capacity) {
+        Ok(limit) => limit,
+        Err(error) => fatal!(conduit, "Fatal: system limit unusable: {error:?}"),
+    };
+
+    // The limit is installed for the whole kernel, so every later spawn is checked against it.
+    match divider::install(limit) {
+        Ok(()) => information!(
+            EarlyConsole,
+            "System limit divider installed: {} actors, {} pages, {} messages and {} bytes per inbox",
+            limit.maximum_actors,
+            limit.budget.memory_budget_in_pages,
+            limit.budget.inbox_message_budget,
+            limit.budget.inbox_byte_budget,
+        ),
+        Err(error) => fatal!(
+            conduit,
+            "Fatal: system limit divider installation failed: {error:?}"
+        ),
+    }
+
+    match initialise_actor_table(frame_allocator, limit.maximum_actors) {
+        Ok(frame_count) => information!(
+            EarlyConsole,
+            "Actor table built: {} slots in {frame_count} frames",
+            limit.maximum_actors
+        ),
+        Err(error) => fatal!(conduit, "Fatal: actor table unusable: {error:?}"),
+    }
+
+    // Every actor slot needs a kernel stack, so they are built with the table.
+    match initialise_kernel_stacks(frame_allocator, limit.maximum_actors) {
+        Ok(frame_count) => information!(
+            EarlyConsole,
+            "Kernel stacks built: {} stacks in {frame_count} frames",
+            limit.maximum_actors
+        ),
+        Err(error) => fatal!(conduit, "Fatal: kernel stacks unusable: {error:?}"),
+    }
+
+    // Every core can hold every actor in its run queue, so the queues are built with the table.
+    match initialise_queues(frame_allocator, limit.maximum_actors) {
+        Ok(frame_count) => information!(
+            EarlyConsole,
+            "Run queues built: {CORE_COUNT} queues in {frame_count} frames"
+        ),
+        Err(error) => fatal!(conduit, "Fatal: run queues unusable: {error:?}"),
+    }
+
+    (capacity, limit)
+}
+
+/// Maps a user address space through the installed allocator to prove it works end to end.
+fn run_user_mapping_check(conduit: Option<PowerStateCoordinationInterfaceConduit>) {
+    match with_frame_allocator(run_user_mapping_self_test) {
+        Some(Ok(())) => information!(EarlyConsole, "User-mapping self-test passed"),
+        Some(Err(reason)) => fatal!(conduit, "User-mapping self-test failed: {reason}"),
+        None => error!(
+            EarlyConsole,
+            "User-mapping self-test skipped: frame allocator not installed"
+        ),
+    }
+}
+
 /// Verifies that all reclamation stacks start with an intact pattern.
 fn verify_reclamation_stacks() {
-    for core_index in 0..CORE_MAXIMUM {
+    for core_index in 0..CORE_COUNT {
         let (used, capacity) = reclamation_stack_high_water_bytes(core_index);
 
         assert_eq!(
@@ -193,14 +324,27 @@ fn verify_reclamation_stacks() {
     }
 }
 
-/// A full inbox must fit within its byte budget.
-fn verify_inbox_budget() {
-    let charge = MessagePool::<(), MESSAGE_POOL_CAPACITY, MESSAGE_MAXIMUM_PAYLOAD_BYTES, 0>::message_charge::<LocalAddress>()
-        .expect("charge")
-        .bytes();
+/// Starts tracking stack usage on interrupt and reclamation stacks, and checks the starting state.
+fn initialise_stack_tracking() {
+    initialise_interrupt_stack_tracking();
+    initialise_reclamation_stack_tracking();
+    verify_reclamation_stacks();
+}
+
+/// A full inbox must fit within its byte budget, and within the storage behind it.
+fn verify_inbox_budget(capacity: &Capacity, limit: &Limit) {
+    let charge = capacity.message_charge_byte_count;
+    let message_budget = usize::try_from(limit.budget.inbox_message_budget).unwrap_or(usize::MAX);
+    let byte_budget = usize::try_from(limit.budget.inbox_byte_budget).unwrap_or(usize::MAX);
+
     assert!(
-        charge * ACTOR_INBOX_CAPACITY <= ACTOR_INBOX_BYTE_BUDGET,
-        "inbox budget too small: charge {charge} x {ACTOR_INBOX_CAPACITY} > {ACTOR_INBOX_BYTE_BUDGET}"
+        message_budget <= capacity.inbox_message_capacity,
+        "inbox message budget {message_budget} exceeds the inbox storage {}",
+        capacity.inbox_message_capacity
+    );
+    assert!(
+        charge * message_budget <= byte_budget,
+        "inbox budget too small: charge {charge} x {message_budget} > {byte_budget}"
     );
 }
 
@@ -227,18 +371,7 @@ fn after_bootstrap(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> !
 /// Called by the assembly entry once the stack is ready and `.bss` is cleared.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
-    install_exception_vectors();
-    record_boot_ticks(read_counter_value());
-    initialise_console_hardware();
-
-    if !register_current_core(0) {
-        // The device tree has not been read, so the power interface is not known yet.
-        fatal!(None, "Fatal: unable to register the current core: 0");
-    }
-
-    // Every core needs a real frame to resume when the run queue is empty.
-    install_idle_frames();
-    log_banner();
+    start_boot_core();
 
     let device_tree = match load_device_tree(device_tree_address) {
         Ok(device_tree) => device_tree,
@@ -269,22 +402,7 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
         "Device tree blob discovered at physical address {:#x}",
         device_tree.blob_address
     );
-
-    let memory_end = summary.memory_base_address + summary.memory_byte_count;
-    information!(
-        EarlyConsole,
-        "Physical memory map: {:#x} to {:#x}, {} bytes ({} megabytes)",
-        summary.memory_base_address,
-        memory_end,
-        summary.memory_byte_count,
-        summary.memory_byte_count / BYTES_PER_MEGABYTE
-    );
-    information!(
-        EarlyConsole,
-        "Kernel image occupies {:#x} to {:#x}",
-        kernel_image_start_address(),
-        kernel_image_end_address()
-    );
+    report_physical_memory(summary.memory_base_address, summary.memory_byte_count);
     information!(
         EarlyConsole,
         "Multiprocessing: {} execution cores detected; power state coordination interface: {:?}",
@@ -322,21 +440,13 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
 
     run_frame_allocator_self_test(&mut frame_allocator);
 
+    let (capacity, limit) = build_actor_storage(&mut frame_allocator, conduit);
+
     // From here on the kernel allocates memory through the shared allocator.
     install_frame_allocator(frame_allocator);
 
-    match with_frame_allocator(run_user_mapping_self_test) {
-        Some(Ok(())) => information!(EarlyConsole, "User-mapping self-test passed"),
-        Some(Err(reason)) => fatal!(conduit, "User-mapping self-test failed: {reason}"),
-        None => error!(
-            EarlyConsole,
-            "User-mapping self-test skipped: frame allocator not installed"
-        ),
-    }
-
-    initialise_interrupt_stack_tracking();
-    initialise_reclamation_stack_tracking();
-    verify_reclamation_stacks();
+    run_user_mapping_check(conduit);
+    initialise_stack_tracking();
 
     initialise_distributor();
 
@@ -355,7 +465,7 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
     }
 
     start_current_core_tick();
-    verify_inbox_budget();
+    verify_inbox_budget(&capacity, &limit);
 
     information!(
         EarlyConsole,

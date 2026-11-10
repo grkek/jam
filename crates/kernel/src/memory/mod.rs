@@ -8,6 +8,7 @@ pub mod kernel_image;
 pub mod kernel_map;
 pub mod kernel_stack;
 pub mod page_tables;
+pub mod paged_directory;
 pub mod private_page;
 pub mod user_memory;
 pub mod user_program;

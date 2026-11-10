@@ -18,7 +18,7 @@ use foundation::{
 };
 
 use crate::{
-    actors::{control_block::ActorState, table::with_control_block},
+    actors::{control_block::State, table::with_control_block},
     architecture::aarch64::{
         exceptions::TrapFrame, memory_management_unit::invalidate_address_space_identifier,
     },
@@ -82,7 +82,7 @@ fn allocate(page_count: usize) -> CallResult {
 
     let slot = current_actor_slot()?;
     with_control_block(slot, |actor| {
-        if actor.state != ActorState::Running {
+        if actor.state != State::Running {
             return Err(SystemCallStatus::InvalidArgument);
         }
         if actor.dynamic_memory_page_count != 0 {
@@ -167,7 +167,7 @@ fn allocate(page_count: usize) -> CallResult {
 fn release(start_address: usize, page_count: usize) -> CallResult {
     let slot = current_actor_slot()?;
     with_control_block(slot, |actor| {
-        if actor.state != ActorState::Running
+        if actor.state != State::Running
             || start_address != DYNAMIC_MEMORY_START_ADDRESS
             || page_count == 0
             || actor.dynamic_memory_page_count != page_count

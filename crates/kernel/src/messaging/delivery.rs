@@ -5,19 +5,18 @@
 
 use crate::{
     actors::{
-        control_block::ActorState,
+        control_block::State,
         inbox::{Envelope, MessageMetadata, SendEffect, SendError},
         message_pool::MessageHandle,
         message_storage::MESSAGE_POOL,
         table::with_control_block,
     },
-    architecture::aarch64::power_interface::halt_machine,
+    architecture::aarch64::{
+        memory_management_unit::actor_slot_ceiling, power_interface::halt_machine,
+    },
     scheduling::scheduler::wake_inbox_actor,
 };
-use foundation::{
-    address::LocalAddress, resource_budget::DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS,
-    system_call_status::SystemCallStatus,
-};
+use foundation::{address::LocalAddress, system_call_status::SystemCallStatus};
 
 /// Releases a message outside actor locks; pool corruption stops execution.
 pub fn release_message(handle: MessageHandle) {
@@ -36,13 +35,13 @@ pub fn tell_actor(
     payload: &[u8],
 ) -> Result<(), SystemCallStatus> {
     let slot_index = destination.slot_index() as usize;
-    if slot_index >= DEFAULT_MAXIMUM_AMOUNT_OF_ACTORS {
+    if slot_index >= actor_slot_ceiling() {
         return Err(SystemCallStatus::MalformedAddress);
     }
 
     let live = with_control_block(slot_index, |actor| {
         actor.generation_counter == destination.generation_counter()
-            && !matches!(actor.state, ActorState::Free | ActorState::Exiting)
+            && !matches!(actor.state, State::Free | State::Exiting)
     })
     .unwrap_or(false);
 
@@ -59,7 +58,7 @@ pub fn tell_actor(
 
     let result = with_control_block(slot_index, |actor| {
         if actor.generation_counter != destination.generation_counter()
-            || matches!(actor.state, ActorState::Free | ActorState::Exiting)
+            || matches!(actor.state, State::Free | State::Exiting)
         {
             return Err(SystemCallStatus::MalformedAddress);
         }

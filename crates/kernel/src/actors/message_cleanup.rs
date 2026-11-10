@@ -16,7 +16,7 @@
 use foundation::address::LocalAddress;
 
 use super::{
-    control_block::{ActorState, ControlBlock},
+    control_block::{State, ControlBlock},
     message_pool::{MessageHandle, MessagePool, PoolError, ReleasedMessage},
     table::with_control_block,
 };
@@ -104,7 +104,7 @@ fn with_actor<Output>(
     let slot_index =
         usize::try_from(actor_address.slot_index()).map_err(|_| CleanupError::InvalidSlot)?;
     with_control_block(slot_index, |control_block| {
-        if control_block.state == ActorState::Free {
+        if control_block.state == State::Free {
             return Err(CleanupError::FreeActor);
         }
         if control_block.generation_counter != actor_address.generation_counter() {
@@ -133,7 +133,7 @@ pub fn begin_actor_message_exit(actor_address: LocalAddress) -> Result<(), Clean
             .as_mut()
             .ok_or(CleanupError::MissingInbox)?;
         inbox.close();
-        control_block.state = ActorState::Exiting;
+        control_block.transition_to(State::Exiting);
         Ok(())
     })
 }
@@ -151,7 +151,7 @@ pub fn take_next_closed_message(
     actor_address: LocalAddress,
 ) -> Result<Option<PendingMessageRelease>, CleanupError> {
     with_actor(actor_address, |control_block| {
-        if control_block.state != ActorState::Exiting {
+        if control_block.state != State::Exiting {
             return Err(CleanupError::NotExiting);
         }
         let inbox = control_block
@@ -223,7 +223,7 @@ pub fn release_pending_message<
     };
 
     let completion = with_actor(actor_address, |control_block| {
-        if control_block.state != ActorState::Exiting {
+        if control_block.state != State::Exiting {
             return Err(CleanupError::NotExiting);
         }
         control_block.pending_message_releases = control_block
@@ -276,7 +276,7 @@ pub fn reclaim_one_closed_message<
 /// Rejects invalid, stale, non-exiting, or uninitialised actor slots.
 pub fn message_cleanup_complete(actor_address: LocalAddress) -> Result<bool, CleanupError> {
     with_actor(actor_address, |control_block| {
-        if control_block.state != ActorState::Exiting {
+        if control_block.state != State::Exiting {
             return Err(CleanupError::NotExiting);
         }
 
@@ -342,7 +342,7 @@ pub fn reclaim_all_closed_messages<
 /// missing inbox state. The check and removal occur under the same actor lock.
 pub fn detach_reclaimed_inbox(actor_address: LocalAddress) -> Result<bool, CleanupError> {
     let detached = with_actor(actor_address, |control_block| {
-        if control_block.state != ActorState::Exiting {
+        if control_block.state != State::Exiting {
             return Err(CleanupError::NotExiting);
         }
 

@@ -61,7 +61,7 @@ fn start_psci_cores(
     let mut requested_core_count = 0;
     for core_index in 1..summary
         .central_processing_unit_count
-        .min(core_local::CORE_MAXIMUM)
+        .min(core_local::CORE_COUNT)
     {
         let status = power_interface::start_secondary_core(
             conduit,

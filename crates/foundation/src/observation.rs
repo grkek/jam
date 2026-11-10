@@ -21,6 +21,11 @@ pub const STATISTICS_RECORD_WORD_COUNT: usize = 10;
 pub const ACTOR_RECORD_BYTE_COUNT: usize = ACTOR_RECORD_WORD_COUNT * 8;
 /// Bytes in the node statistics record.
 pub const STATISTICS_RECORD_BYTE_COUNT: usize = STATISTICS_RECORD_WORD_COUNT * 8;
+/// Maximum actor records returned by one census call.
+pub const MAXIMUM_CENSUS_RECORDS_PER_CALL: usize = 8;
+/// Maximum bytes written by one batched census call.
+pub const CENSUS_BATCH_BYTE_COUNT: usize =
+    MAXIMUM_CENSUS_RECORDS_PER_CALL * ACTOR_RECORD_BYTE_COUNT;
 
 /// Actor record word offsets: version, packed address, state, parent-present,
 /// packed parent, inbox messages, inbox charged bytes, and inbox byte budget.
@@ -33,7 +38,7 @@ pub type StatisticsRecord = [u64; STATISTICS_RECORD_WORD_COUNT];
 /// Stable state numbers used in actor records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u64)]
-pub enum ActorState {
+pub enum State {
     /// Unoccupied actor slot.
     Free = 0,
     /// Eligible for scheduling.

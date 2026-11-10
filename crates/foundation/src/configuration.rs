@@ -36,7 +36,7 @@ pub enum Survival {
 ///
 /// The resource budget and overflow policy can be adjusted later through a system call.
 /// Lineage and survival cannot.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Configuration {
     /// Ceilings on what the actor may consume.
     pub resource_budget: ResourceBudget,
@@ -48,16 +48,48 @@ pub struct Configuration {
     pub survival: Survival,
 }
 
+impl Configuration {
+    /// Safest choices for everything except the budget, which the system decides.
+    #[must_use]
+    pub const fn with_budget(resource_budget: ResourceBudget) -> Self {
+        Self {
+            resource_budget,
+            overflow_policy: OverflowPolicy::EndActor,
+            lineage: Lineage::Untethered,
+            survival: Survival::CascadesWithParent,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn default_configuration_is_the_safest_choice() {
-        let configuration = Configuration::default();
+        let configuration = Configuration {
+            resource_budget: ResourceBudget {
+                memory_budget_in_pages: 0,
+                inbox_message_budget: 0,
+                inbox_byte_budget: 0,
+                staging_queue_message_budget: 0,
+            },
+            overflow_policy: OverflowPolicy::EndActor,
+            lineage: Lineage::Untethered,
+            survival: Survival::CascadesWithParent,
+        };
+
         assert_eq!(configuration.overflow_policy, OverflowPolicy::EndActor);
         assert_eq!(configuration.lineage, Lineage::Untethered);
         assert_eq!(configuration.survival, Survival::CascadesWithParent);
-        assert_eq!(configuration.resource_budget, ResourceBudget::default());
+        assert_eq!(
+            configuration.resource_budget,
+            ResourceBudget {
+                memory_budget_in_pages: 0,
+                inbox_message_budget: 0,
+                inbox_byte_budget: 0,
+                staging_queue_message_budget: 0,
+            }
+        );
     }
 }
