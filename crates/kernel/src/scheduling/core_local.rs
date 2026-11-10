@@ -17,15 +17,40 @@ pub const CORE_COUNT: usize = 16;
 /// Stands in for a slot index when a core runs no actor.
 pub const NO_ACTOR: usize = usize::MAX;
 
+/// Independently sampled scheduler counters; they are diagnostics, not a coherent snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SchedulerStatistics {
+    /// Approximate queued actor count; the owning queue lock is authoritative.
+    pub queued_actor_count: usize,
+    /// Timer ticks handled by this core.
+    pub tick_count: u64,
+    /// Successful actor dispatches (excluding the no-switch timer fast path).
+    pub actor_dispatch_count: u64,
+    /// Work-stealing scans initiated by this core.
+    pub steal_attempt_count: u64,
+    /// Runnable actors moved here from other cores.
+    pub stolen_actor_count: u64,
+    /// Dispatched actors whose previous core differs from this core.
+    pub migration_count: u64,
+    /// Times dispatch fell back to this core's idle context.
+    pub idle_dispatch_count: u64,
+}
+
 /// One core's data, aligned to a cache line so cores never contend for the same line.
 #[repr(align(64))]
 pub struct CoreLocal {
     core_index: usize,
     is_online: AtomicBool,
     queue: SpinLock<Queue>,
+    published_queue_length: AtomicUsize,
     current_slot_index: AtomicUsize,
     idle_frame_address: AtomicUsize,
     tick_count: AtomicU64,
+    actor_dispatch_count: AtomicU64,
+    steal_attempt_count: AtomicU64,
+    stolen_actor_count: AtomicU64,
+    migration_count: AtomicU64,
+    idle_dispatch_count: AtomicU64,
 }
 
 impl CoreLocal {
@@ -34,9 +59,15 @@ impl CoreLocal {
             core_index,
             is_online: AtomicBool::new(false),
             queue: SpinLock::new(Queue::new()),
+            published_queue_length: AtomicUsize::new(0),
             current_slot_index: AtomicUsize::new(NO_ACTOR),
             idle_frame_address: AtomicUsize::new(0),
             tick_count: AtomicU64::new(0),
+            actor_dispatch_count: AtomicU64::new(0),
+            steal_attempt_count: AtomicU64::new(0),
+            stolen_actor_count: AtomicU64::new(0),
+            migration_count: AtomicU64::new(0),
+            idle_dispatch_count: AtomicU64::new(0),
         }
     }
 
@@ -56,6 +87,28 @@ impl CoreLocal {
     #[must_use]
     pub const fn queue(&self) -> &SpinLock<Queue> {
         &self.queue
+    }
+
+    /// Approximate run-queue depth, published while holding the run-queue lock.
+    ///
+    /// Consumers must recheck the queue under lock before modifying its contents.
+    #[must_use]
+    pub fn queue_length_estimate(&self) -> usize {
+        self.published_queue_length.load(Ordering::Relaxed)
+    }
+
+    /// Publishes a queue length after a successful push, pop, or steal.
+    ///
+    /// The caller must hold this core's run-queue lock.
+    pub fn publish_queue_length(&self, length: usize) {
+        self.published_queue_length.store(length, Ordering::Relaxed);
+    }
+
+    /// Estimated load for soft wake-up placement, including a running actor.
+    #[must_use]
+    pub fn load_estimate(&self) -> usize {
+        self.queue_length_estimate()
+            .saturating_add(usize::from(self.current_slot_index() != NO_ACTOR))
     }
 
     /// The slot of the actor running here, or `NO_ACTOR`.
@@ -85,6 +138,44 @@ impl CoreLocal {
     pub fn increment_tick_count(&self) -> u64 {
         self.tick_count.fetch_add(1, Ordering::Relaxed) + 1
     }
+
+    /// Records a successful actor dispatch and optional inter-core migration.
+    pub fn record_actor_dispatch(&self, migrated: bool) {
+        self.actor_dispatch_count.fetch_add(1, Ordering::Relaxed);
+        if migrated {
+            self.migration_count.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Records an attempted steal scan; called only when balancing is requested.
+    pub fn record_steal_attempt(&self) {
+        self.steal_attempt_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Records a completed batch of stolen runnable actors.
+    pub fn record_stolen_actors(&self, count: usize) {
+        self.stolen_actor_count
+            .fetch_add(count as u64, Ordering::Relaxed);
+    }
+
+    /// Records a dispatch to this core's idle frame.
+    pub fn record_idle_dispatch(&self) {
+        self.idle_dispatch_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Reads the per-core scheduler counters without acquiring global locks.
+    #[must_use]
+    pub fn scheduler_statistics(&self) -> SchedulerStatistics {
+        SchedulerStatistics {
+            queued_actor_count: self.queue_length_estimate(),
+            tick_count: self.tick_count.load(Ordering::Relaxed),
+            actor_dispatch_count: self.actor_dispatch_count.load(Ordering::Relaxed),
+            steal_attempt_count: self.steal_attempt_count.load(Ordering::Relaxed),
+            stolen_actor_count: self.stolen_actor_count.load(Ordering::Relaxed),
+            migration_count: self.migration_count.load(Ordering::Relaxed),
+            idle_dispatch_count: self.idle_dispatch_count.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// Builds one entry per core, each knowing its own index.
@@ -102,7 +193,7 @@ const fn build_core_locals() -> [CoreLocal; CORE_COUNT] {
 
 static CORE_LOCALS: [CoreLocal; CORE_COUNT] = build_core_locals();
 
-/// Gives every core's run queue room for `capacity` actors and returns how many frames that took.
+/// Gives every core's queue room for `capacity` actors and returns how many frames that took.
 ///
 /// An actor sits in at most one queue at a time, so the number of actor slots is enough
 /// for every queue, even when work stealing moves entries between cores.

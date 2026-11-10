@@ -17,7 +17,7 @@ use foundation::{
 };
 
 use crate::{
-    actors::{inbox::MessageMetadata, table::spawn_user_actor},
+    actors::{divider::default_configuration, inbox::MessageMetadata, table::spawn_user_actor},
     architecture::aarch64::{early_console::EarlyConsole, processor, time::read_counter_value},
     information,
     memory::user_program::EL0_GENESIS_PROGRAM,
@@ -138,7 +138,7 @@ impl Plan {
 
     /// Spawn failures are expected under stress, so they are counted, not fatal.
     fn spawn(&mut self) -> Option<LocalAddress> {
-        match spawn_user_actor(EL0_GENESIS_PROGRAM, None, Configuration::default()) {
+        match spawn_user_actor(EL0_GENESIS_PROGRAM, None, default_configuration()) {
             Ok(actor) => {
                 self.spawned += 1;
                 Some(actor)

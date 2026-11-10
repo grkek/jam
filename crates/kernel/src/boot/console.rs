@@ -56,7 +56,7 @@ pub fn start() -> Result<(), &'static str> {
 
     crate::information!(
         EarlyConsole,
-        "Userland started: Genesis {genesis}, Terminal {terminal}, Console-Driver {driver}"
+        "Userland started: Genesis {genesis}, Console-Driver {driver}, Terminal {terminal}"
     );
 
     TERMINAL_ADDRESS.store(pack_local_address(terminal), Ordering::Release);

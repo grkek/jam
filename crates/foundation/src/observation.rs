@@ -5,6 +5,10 @@
 //! represented explicitly. Each record is consistent under its actor lock;
 //! successive records need not describe the same instant.
 //!
+//! `ReadCoreCensus`: x0 is a core index, x1 an output pointer, x2 the byte
+//! capacity; x3..x5 must be zero. Success returns the supported core slots in x1.
+//! Counters are sampled independently and may differ during concurrent updates.
+//!
 //! `ReadStatistics`: x0 is the output pointer, x1 the byte capacity; x2..x5
 //! must be zero. Success returns the record byte count in x1. Its counters are
 //! sampled independently and are diagnostic, not an atomic resource ledger.
@@ -17,6 +21,10 @@ pub const RECORD_VERSION: u64 = 1;
 pub const ACTOR_RECORD_WORD_COUNT: usize = 8;
 /// Words in the node statistics record.
 pub const STATISTICS_RECORD_WORD_COUNT: usize = 10;
+/// Words in the per-core scheduler census record.
+pub const CORE_RECORD_WORD_COUNT: usize = 10;
+/// Bytes in a core scheduler census record.
+pub const CORE_RECORD_BYTE_COUNT: usize = CORE_RECORD_WORD_COUNT * 8;
 /// Bytes in one actor census record.
 pub const ACTOR_RECORD_BYTE_COUNT: usize = ACTOR_RECORD_WORD_COUNT * 8;
 /// Bytes in the node statistics record.
@@ -30,6 +38,9 @@ pub const CENSUS_BATCH_BYTE_COUNT: usize =
 /// Actor record word offsets: version, packed address, state, parent-present,
 /// packed parent, inbox messages, inbox charged bytes, and inbox byte budget.
 pub type ActorRecord = [u64; ACTOR_RECORD_WORD_COUNT];
+/// Core record word offsets: version, index, online, queued actors, timer ticks,
+/// actor dispatches, steal scans, actors stolen, migrations, idle dispatches.
+pub type CoreRecord = [u64; CORE_RECORD_WORD_COUNT];
 /// Statistics word offsets: version, total frames, free frames, pool capacity,
 /// allocated messages, charged message bytes, online cores, actor capacity,
 /// occupied actors, and waiting actors. Physical frames are 4096 bytes.

@@ -16,12 +16,7 @@ use crate::{
 
 /// Decodes an address stored in the queue.
 fn unpack_address(packed: u64) -> LocalAddress {
-    let bytes = packed.to_le_bytes();
-    let (slot, generation) = bytes.split_at(4);
-    LocalAddress::new(
-        u32::from_le_bytes(slot.try_into().unwrap_or([0; 4])),
-        u32::from_le_bytes(generation.try_into().unwrap_or([0; 4])),
-    )
+    LocalAddress::new(packed as u32, (packed >> 32) as u32)
 }
 
 /// Runnable actors waiting in order, oldest first.
@@ -82,6 +77,19 @@ impl Queue {
         self.length == 0
     }
 
+    /// Computes a ring-buffer index without integer division.
+    ///
+    /// Requires a nonempty queue allocation and an offset below its capacity.
+    fn ring_index(&self, offset: usize) -> usize {
+        debug_assert!(self.capacity != 0 && offset < self.capacity);
+        let remaining = self.capacity - self.head;
+        if offset >= remaining {
+            offset - remaining
+        } else {
+            self.head + offset
+        }
+    }
+
     /// Adds `address` at the back. Returns `false` when the queue is full.
     pub fn push_back(&mut self, address: LocalAddress) -> bool {
         if self.length == self.capacity {
@@ -96,7 +104,7 @@ impl Queue {
             return false;
         }
 
-        let index = (self.head + self.length) % self.capacity;
+        let index = self.ring_index(self.length);
         if !self.entries.set(index, stored) {
             return false;
         }
@@ -112,7 +120,10 @@ impl Queue {
         }
 
         let stored = self.entries.get(self.head)?;
-        self.head = (self.head + 1) % self.capacity;
+        self.head += 1;
+        if self.head == self.capacity {
+            self.head = 0;
+        }
         self.length -= 1;
         Some(unpack_address(stored as u64))
     }
@@ -123,9 +134,28 @@ impl Queue {
             return None;
         }
 
-        let index = (self.head + self.length - 1) % self.capacity;
+        let index = self.ring_index(self.length - 1);
         let stored = self.entries.get(index)?;
         self.length -= 1;
         Some(unpack_address(stored as u64))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ring_index_wraps_without_division() {
+        let queue = Queue {
+            entries: PagedDirectory::new(),
+            capacity: 7,
+            head: 5,
+            length: 0,
+        };
+        assert_eq!(queue.ring_index(0), 5);
+        assert_eq!(queue.ring_index(1), 6);
+        assert_eq!(queue.ring_index(2), 0);
+        assert_eq!(queue.ring_index(6), 4);
     }
 }

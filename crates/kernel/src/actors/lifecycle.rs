@@ -329,8 +329,7 @@ pub fn end_current_actor(cause: Cause) -> Option<usize> {
     }
 
     let _ = with_control_block(slot_index, |actor| {
-        if actor.state == State::Exiting
-            && actor.generation_counter == address.generation_counter()
+        if actor.state == State::Exiting && actor.generation_counter == address.generation_counter()
         {
             actor.exit_cause = Some(cause);
         }

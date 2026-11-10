@@ -12,10 +12,13 @@ use crate::hardware_description::{
 
 /// Physical frame granularity used by JAM and `AArch64` page tables.
 pub const PHYSICAL_FRAME_BYTE_COUNT: u64 = 4096;
+
 /// Current bootstrap's 2 MiB block granularity for RAM mappings.
 const BOOTSTRAP_BLOCK_BYTE_COUNT: u64 = 2 * 1024 * 1024;
+
 /// Extra reservations for the boot image, DTB, and bitmap storage.
 const EXTRA_PROTECTED_REGION_COUNT: usize = 3;
+
 /// Maximum number of tracked physical reservations during early boot.
 pub const MAXIMUM_PROTECTED_REGIONS: usize =
     MAXIMUM_RESERVED_REGIONS + EXTRA_PROTECTED_REGION_COUNT;

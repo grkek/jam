@@ -7,7 +7,7 @@
 use super::actor_calls::{current_address, pack_local_address};
 use crate::{
     actors::{
-        control_block::{State, ControlBlock},
+        control_block::{ControlBlock, State},
         inbox::{
             CancelResult, CompleteResult, InboxWaitResult, MessageMetadata, ParkResult,
             ReceiveResult, ReceiveSelector,
@@ -61,8 +61,7 @@ fn with_caller<Output>(
     operation: impl FnOnce(&mut ControlBlock) -> Output,
 ) -> Output {
     with_control_block(address.slot_index() as usize, |actor| {
-        if actor.state != State::Running
-            || actor.generation_counter != address.generation_counter()
+        if actor.state != State::Running || actor.generation_counter != address.generation_counter()
         {
             halt_machine();
         }

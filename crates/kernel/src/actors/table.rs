@@ -7,7 +7,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use foundation::{address::LocalAddress, configuration::Configuration};
 
-use super::control_block::{State, ControlBlock};
+use super::control_block::{ControlBlock, State};
 use crate::{
     actors::{divider::system_limit, inbox::Inbox},
     architecture::aarch64::{
@@ -262,7 +262,7 @@ pub fn spawn_kernel_actor(
         // Release the control-block lock before scheduling.
         drop(control_block);
 
-        assert!(enqueue_runnable(slot_index), "Run queue rejected new actor");
+        assert!(enqueue_runnable(slot_index), "Queue rejected new actor");
 
         return Ok(address);
     }

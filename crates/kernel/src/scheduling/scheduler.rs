@@ -1,11 +1,11 @@
 //! Per-core round-robin scheduling with generation-aware actor queue entries.
 //!
-//! Foundation's [`LocalAddress`] run queue stores actor slot and generation
+//! Foundation's [`LocalAddress`] queue stores actor slot and generation
 //! directly. Actor state and queue membership are synchronized by the
 //! actor control-block lock before publishing an entry.
 //!
-//! **Lock order:** actor control block -> one core run queue. Work stealing
-//! locks two run queues in ascending core-index order but never takes an
+//! **Lock order:** actor control block -> one core queue. Work stealing
+//! locks two queues in ascending core-index order but never takes an
 //! actor lock. Dispatch drops the queue lock before claiming an actor.
 //! Actors marked `Exiting` are never dispatched or requeued.
 
@@ -30,6 +30,12 @@ const STEAL_BATCH_MAXIMUM: usize = 16;
 /// Number of scheduler timer interrupts per second, on each core.
 const TICKS_PER_SECOND: u64 = 100;
 
+/// Probe for sustained cross-core imbalance every tenth tick (100 milliseconds).
+const BALANCE_CHECK_INTERVAL_TICKS: u64 = 10;
+
+/// Maximum excess load tolerated before overriding the last-core affinity hint.
+const AFFINITY_LOAD_TOLERANCE: usize = 1;
+
 /// Returns the machine counter delta between scheduler ticks.
 fn tick_interval() -> u64 {
     time::read_counter_frequency() / TICKS_PER_SECOND
@@ -42,13 +48,49 @@ pub fn start_current_core_tick() {
     enable_interrupts();
 }
 
-/// Publishes a runnable actor exactly once to the calling core's run queue.
+/// Returns whether the previous core is sufficiently lightly loaded for cache affinity.
+fn preserve_cache_affinity(
+    previous_core_is_online: bool,
+    previous_core_load: usize,
+    current_core_load: usize,
+) -> bool {
+    previous_core_is_online
+        && previous_core_load <= current_core_load.saturating_add(AFFINITY_LOAD_TOLERANCE)
+}
+
+/// Selects an eligible queue using a soft previous-core hint, never a hard affinity rule.
+///
+/// Load estimates are advisory. The chosen queue is always locked before publishing work.
+fn choose_enqueue_core(
+    current_core: &'static CoreLocal,
+    last_core_index: Option<usize>,
+) -> &'static CoreLocal {
+    let Some(previous_core) = last_core_index.and_then(|index| core_locals().get(index)) else {
+        return current_core;
+    };
+
+    if previous_core.core_index() == current_core.core_index() {
+        return current_core;
+    }
+
+    if preserve_cache_affinity(
+        previous_core.is_online(),
+        previous_core.load_estimate(),
+        current_core.load_estimate(),
+    ) {
+        previous_core
+    } else {
+        current_core
+    }
+}
+
+/// Publishes a runnable actor exactly once to the selected core's queue.
 ///
 /// A duplicate enqueue is ignored. Failure to find a current core, a full
 /// queue, or an actor in any state other than `Runnable` leaves queue
 /// membership unchanged. This is also used when spawning an actor.
 pub fn enqueue_runnable(slot_index: usize) -> bool {
-    let Some(core_local) = current_core_local() else {
+    let Some(current_core) = current_core_local() else {
         return false;
     };
     with_control_block(slot_index, |actor| {
@@ -64,48 +106,61 @@ pub fn enqueue_runnable(slot_index: usize) -> bool {
             return false;
         };
 
-        let mut queue = core_local.queue().lock();
+        let selected_core = choose_enqueue_core(current_core, actor.last_core_index);
+        let mut queue = selected_core.queue().lock();
 
         if queue.length() >= queue.capacity() {
             return false;
         }
 
-        let ok = queue.push_back(LocalAddress::new(n, actor.generation_counter));
-        actor.queued = ok;
+        let inserted = queue.push_back(LocalAddress::new(n, actor.generation_counter));
+        if inserted {
+            selected_core.publish_queue_length(queue.length());
+        }
+        actor.queued = inserted;
 
-        ok
+        inserted
     })
     .unwrap_or(false)
 }
 
-/// Balances runnable actors with the busiest online core.
+/// Returns whether a remote queue seems sufficiently busier to make stealing useful.
 ///
-/// Locks the two run queues in ascending core-index order, so transfers cannot
-/// drop an entry or deadlock with another simultaneous work-stealing attempt.
-/// Actor locks are never acquired while holding these queue locks.
+/// Approximate lengths are advisory; the actual transfer rechecks both locked queues.
+fn has_stealable_work(core_local: &CoreLocal) -> bool {
+    let minimum_victim_length = core_local.queue_length_estimate().saturating_add(1);
+    core_locals().iter().any(|candidate| {
+        candidate.core_index() != core_local.core_index()
+            && candidate.is_online()
+            && candidate.queue_length_estimate() > minimum_victim_length
+    })
+}
+
+/// Balances runnable actors with the busiest online core, only when requested.
+///
+/// A relaxed-atomic scan replaces the previous N-core queue-lock scan. The only
+/// queue locks acquired are the destination and selected victim, in ascending
+/// core-index order. No actor lock is acquired while holding either queue lock.
 fn rebalance(core_local: &CoreLocal) {
-    let own_length = core_local.queue().lock().length();
+    core_local.record_steal_attempt();
+    let own_length = core_local.queue_length_estimate();
     let mut busiest: Option<(&CoreLocal, usize)> = None;
 
-    for other_core in core_locals() {
-        if other_core.core_index() == core_local.core_index() || !other_core.is_online() {
+    for candidate in core_locals() {
+        if candidate.core_index() == core_local.core_index() || !candidate.is_online() {
             continue;
         }
-
-        let length = other_core.queue().lock().length();
-
-        if busiest.is_none_or(|(_, longest)| length > longest) {
-            busiest = Some((other_core, length));
+        let candidate_length = candidate.queue_length_estimate();
+        if candidate_length > own_length.saturating_add(1)
+            && busiest.is_none_or(|(_, longest)| candidate_length > longest)
+        {
+            busiest = Some((candidate, candidate_length));
         }
     }
 
-    let Some((victim, victim_length)) = busiest else {
+    let Some((victim, _)) = busiest else {
         return;
     };
-
-    if victim_length <= own_length + 1 {
-        return;
-    }
 
     let (first, second) = if core_local.core_index() < victim.core_index() {
         (core_local, victim)
@@ -124,29 +179,41 @@ fn rebalance(core_local: &CoreLocal) {
 
     let own_count = own_queue.length();
     let victim_count = victim_queue.length();
-
-    if victim_count <= own_count + 1 {
+    if victim_count <= own_count.saturating_add(1) {
         return;
     }
 
     let transfer_count = ((victim_count - own_count) / 2)
         .min(STEAL_BATCH_MAXIMUM)
-        .min(victim_queue.capacity() - own_count);
+        .min(own_queue.capacity().saturating_sub(own_count));
 
+    let mut transferred_count = 0;
     for _ in 0..transfer_count {
         let Some(entry) = victim_queue.pop_back() else {
             break;
         };
-        // We reserved capacity above while holding both run-queue locks.
-        let inserted = own_queue.push_back(entry);
-        assert!(inserted, "Reserved destination capacity before stealing");
+        // The destination's capacity was reserved while both queues were locked.
+        assert!(
+            own_queue.push_back(entry),
+            "Reserved destination capacity before stealing"
+        );
+        transferred_count += 1;
     }
+
+    core_local.publish_queue_length(own_queue.length());
+    victim.publish_queue_length(victim_queue.length());
+    core_local.record_stolen_actors(transferred_count);
 }
 
 /// Atomically claims a queued actor only if its identity and state still match.
-fn claim_next_runnable(core_local: &CoreLocal) -> Option<(usize, usize, Option<(u64, u16)>)> {
+fn claim_next_runnable(core_local: &CoreLocal) -> Option<(usize, usize, Option<(u64, u16)>, bool)> {
     loop {
-        let address = core_local.queue().lock().pop_front()?;
+        let address = {
+            let mut queue = core_local.queue().lock();
+            let address = queue.pop_front()?;
+            core_local.publish_queue_length(queue.length());
+            address
+        };
         let slot_index = address.slot_index() as usize;
 
         let claimed = with_control_block(slot_index, |actor| {
@@ -181,6 +248,10 @@ fn claim_next_runnable(core_local: &CoreLocal) -> Option<(usize, usize, Option<(
 
             actor.queued = false;
             actor.transition_to(State::Running);
+            let migrated = actor
+                .last_core_index
+                .is_some_and(|previous| previous != core_local.core_index());
+            actor.last_core_index = Some(core_local.core_index());
 
             let mapping = actor.address_space.as_ref().map(|space| {
                 (
@@ -189,33 +260,44 @@ fn claim_next_runnable(core_local: &CoreLocal) -> Option<(usize, usize, Option<(
                 )
             });
 
-            Some((actor.saved_frame_address, mapping))
+            Some((actor.saved_frame_address, mapping, migrated))
         })
         .flatten();
 
-        if let Some((frame, mapping)) = claimed {
-            return Some((slot_index, frame, mapping));
+        if let Some((frame, mapping, migrated)) = claimed {
+            return Some((slot_index, frame, mapping, migrated));
         }
     }
 }
 
-/// Returns the next actor frame or the idle frame, updating the current core.
-fn dispatch_next(core_local: &CoreLocal) -> usize {
-    rebalance(core_local);
-    match claim_next_runnable(core_local) {
-        Some((slot_index, frame_address, lower_half)) => {
+/// Returns the next actor frame, favoring local work before optional stealing.
+fn dispatch_next(core_local: &CoreLocal, periodic_balance: bool) -> usize {
+    // Demand-driven stealing when empty, with a periodic path to correct
+    // sustained imbalance even if every core runs at least one actor.
+    if periodic_balance {
+        rebalance(core_local);
+    }
+    let mut next_actor = claim_next_runnable(core_local);
+    if next_actor.is_none() && !periodic_balance {
+        rebalance(core_local);
+        next_actor = claim_next_runnable(core_local);
+    }
+
+    match next_actor {
+        Some((slot_index, frame_address, lower_half, migrated)) => {
             match lower_half {
                 Some((root, identifier)) => activate_lower_half(root as _, identifier),
                 None => deactivate_lower_half(),
             }
             core_local.set_current_slot_index(slot_index);
+            core_local.record_actor_dispatch(migrated);
             validate_resume_frame(core_local, frame_address);
             frame_address
         }
         None => {
             core_local.set_current_slot_index(NO_ACTOR);
             deactivate_lower_half();
-
+            core_local.record_idle_dispatch();
             validate_resume_frame(core_local, core_local.idle_frame_address())
         }
     }
@@ -250,12 +332,38 @@ fn validate_resume_frame(core_local: &CoreLocal, frame_address: usize) -> usize 
     frame_address
 }
 
+/// Avoids an unnecessary enqueue/dequeue and address-space switch on solo ticks.
+///
+/// Queue emptiness is verified under its own lock. Remote imbalance is sampled
+/// only once per balancing interval; the next timer tick still provides preemption.
+fn can_resume_current_actor_without_dispatch(
+    core_local: &CoreLocal,
+    current_slot_index: usize,
+    periodic_balance: bool,
+) -> bool {
+    if current_slot_index == NO_ACTOR || !core_local.queue().lock().is_empty() {
+        return false;
+    }
+    if periodic_balance && has_stealable_work(core_local) {
+        return false;
+    }
+    with_control_block(current_slot_index, |actor| actor.state == State::Running).unwrap_or(false)
+}
+
 /// Saves an interrupted execution context before publishing it for scheduling.
 ///
 /// Runs from the per-core interrupt stack. The actor can only be stolen after
 /// its saved frame has been committed and it has left `Running`.
-fn schedule(core_local: &CoreLocal, interrupted_frame_address: usize) -> usize {
+fn schedule(
+    core_local: &CoreLocal,
+    interrupted_frame_address: usize,
+    periodic_balance: bool,
+) -> usize {
     let current_slot = core_local.current_slot_index();
+
+    if can_resume_current_actor_without_dispatch(core_local, current_slot, periodic_balance) {
+        return interrupted_frame_address;
+    }
 
     if current_slot == NO_ACTOR {
         // SAFETY: interrupted_frame_address is the TrapFrame the vector just saved; SPSR is at +256.
@@ -288,12 +396,12 @@ fn schedule(core_local: &CoreLocal, interrupted_frame_address: usize) -> usize {
             // Leave this core's current slot before another core can steal
             // and finish this actor. We remain on the interrupt stack.
             core_local.set_current_slot_index(NO_ACTOR);
-            // Commit the saved frame *before* publishing its run queue entry.
+            // Commit the saved frame *before* publishing its queue entry.
             actor.transition_to(State::Runnable);
             actor.queued = true;
             let inserted = queue.push_back(address);
-
-            assert!(inserted, "Checked run queue capacity under lock");
+            assert!(inserted, "Checked queue capacity under lock");
+            core_local.publish_queue_length(queue.length());
         });
         if queue_was_full {
             // The interrupted actor is still Running and never left the core.
@@ -304,13 +412,13 @@ fn schedule(core_local: &CoreLocal, interrupted_frame_address: usize) -> usize {
     // This core no longer owns the saved actor. Another core may steal it.
     core_local.set_current_slot_index(NO_ACTOR);
 
-    dispatch_next(core_local)
+    dispatch_next(core_local, periodic_balance)
 }
 
 /// Picks the next runnable frame after `FinishActor` relinquishes its core.
 #[must_use]
 pub fn pick_next_after_finish(core_local: &CoreLocal) -> usize {
-    dispatch_next(core_local)
+    dispatch_next(core_local, false)
 }
 
 /// Handles the timer interrupt and returns the next frame to resume.
@@ -332,12 +440,23 @@ pub fn on_timer_tick(interrupted_frame_address: usize) -> usize {
         );
     }
 
-    schedule(core_local, interrupted_frame_address)
+    schedule(
+        core_local,
+        interrupted_frame_address,
+        tick % BALANCE_CHECK_INTERVAL_TICKS == 0,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn affinity_is_bounded_by_the_current_core_load() {
+        assert!(preserve_cache_affinity(true, 3, 2));
+        assert!(!preserve_cache_affinity(true, 4, 2));
+        assert!(!preserve_cache_affinity(false, 0, 10));
+    }
 
     #[test]
     fn queue_entries_preserve_actor_generation() {
@@ -364,13 +483,14 @@ pub fn wake_inbox_actor(
     {
         return;
     }
-    let Some(core) = current_core_local() else {
+    let Some(current_core) = current_core_local() else {
         halt_machine();
     };
+    let selected_core = choose_enqueue_core(current_core, actor.last_core_index);
     let Some(inbox) = actor.inbox.as_mut() else {
         halt_machine();
     };
-    let mut queue = core.queue().lock();
+    let mut queue = selected_core.queue().lock();
     if queue.length() >= queue.capacity() {
         halt_machine();
     }
@@ -382,6 +502,7 @@ pub fn wake_inbox_actor(
     if !queue.push_back(token.actor_address()) {
         halt_machine();
     }
+    selected_core.publish_queue_length(queue.length());
 }
 
 /// Dispatches after an inbox wait relinquished this core under the actor lock.
@@ -389,5 +510,5 @@ pub fn wake_inbox_actor(
 /// The old frame must not be accessed: another core may already be resuming it.
 #[must_use]
 pub fn pick_next_after_wait(core: &CoreLocal) -> usize {
-    dispatch_next(core)
+    dispatch_next(core, false)
 }

@@ -55,7 +55,10 @@ pub fn dispatch(trap_frame: *mut TrapFrame) -> *mut TrapFrame {
             super::observation_calls::read(frame, true);
             trap_frame
         }
-        Ok(SystemCall::ReadCoreCensus) => unsupported_call(trap_frame),
+        Ok(SystemCall::ReadCoreCensus) => {
+            super::observation_calls::read_core(frame);
+            trap_frame
+        }
         Ok(SystemCall::DrainChronicle) => unsupported_call(trap_frame),
         Ok(SystemCall::ConfigureChronicle) => unsupported_call(trap_frame),
         Ok(SystemCall::CreateScroll) => unsupported_call(trap_frame),

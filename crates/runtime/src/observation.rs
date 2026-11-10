@@ -2,7 +2,7 @@
 
 use crate::system_call_wrappers::invoke;
 use foundation::{
-    observation::{self, ActorRecord, StatisticsRecord},
+    observation::{self, ActorRecord, CoreRecord, StatisticsRecord},
     system_call::SystemCall,
     system_call_status::SystemCallStatus,
 };
@@ -33,6 +33,33 @@ pub fn read_census(slot: u64) -> Result<(ActorRecord, u64), SystemCallStatus> {
     accepted(status)?;
     let record = observation::decode(&bytes).ok_or(SystemCallStatus::InvalidArgument)?;
     Ok((record, capacity))
+}
+
+/// Reads one core's approximate run-queue depth and scheduler counters.
+///
+/// Returns the record and the number of core slots supported by the kernel.
+///
+/// # Errors
+/// Returns a kernel rejection or `InvalidArgument` for an unsupported record version.
+pub fn read_core_census(core_index: u64) -> Result<(CoreRecord, u64), SystemCallStatus> {
+    let mut bytes = [0_u8; observation::CORE_RECORD_BYTE_COUNT];
+    // SAFETY: The output buffer remains valid and writable during the syscall.
+    let (status, core_capacity) = unsafe {
+        invoke(
+            SystemCall::ReadCoreCensus.number(),
+            [
+                core_index,
+                bytes.as_mut_ptr() as u64,
+                bytes.len() as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    accepted(status)?;
+    let record = observation::decode(&bytes).ok_or(SystemCallStatus::InvalidArgument)?;
+    Ok((record, core_capacity))
 }
 
 /// Reads diagnostic counters sampled independently across kernel subsystems.

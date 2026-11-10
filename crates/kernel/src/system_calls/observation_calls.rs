@@ -11,6 +11,7 @@
 use foundation::{
     address::LocalAddress,
     observation,
+    resource_budget::MAXIMUM_INBOX_MESSAGE_COUNT,
     system_call::{STATUS_REGISTER, VALUE_REGISTER},
     system_call_status::SystemCallStatus,
 };
@@ -18,12 +19,12 @@ use foundation::{
 use crate::{
     actors::{
         control_block::State,
-        message_storage::{ACTOR_INBOX_BYTE_BUDGET, MESSAGE_POOL, MESSAGE_POOL_CAPACITY},
+        message_storage::MESSAGE_POOL,
         table::{actor_table_length, with_control_block},
     },
     architecture::aarch64::exceptions::TrapFrame,
     memory::{frame_allocator::with_frame_allocator, user_copy::copy_to_actor},
-    scheduling::core_local::{current_core_local, online_core_count},
+    scheduling::core_local::{core_locals, current_core_local, online_core_count},
     system_calls::actor_calls::pack_local_address,
 };
 
@@ -58,7 +59,7 @@ fn actor_record(slot_index: usize) -> Result<observation::ActorRecord, SystemCal
                 .as_ref()
                 .map_or(0, crate::actors::inbox::Inbox::resident_bytes) as u64,
             if actor.inbox.is_some() {
-                ACTOR_INBOX_BYTE_BUDGET as u64
+                MAXIMUM_INBOX_MESSAGE_COUNT as u64
             } else {
                 0
             },
@@ -91,7 +92,7 @@ fn statistics_record() -> Result<observation::StatisticsRecord, SystemCallStatus
         observation::RECORD_VERSION,
         total_frames as u64,
         free_frames as u64,
-        MESSAGE_POOL_CAPACITY as u64,
+        MAXIMUM_INBOX_MESSAGE_COUNT as u64,
         message_pool.allocated as u64,
         message_pool.charged_bytes as u64,
         online_core_count() as u64,
@@ -126,8 +127,14 @@ fn copy_record(user_pointer: u64, bytes: &[u8]) -> Result<(), SystemCallStatus> 
 
 /// Handles `ReadStatistics` with one fixed-size, versioned record.
 fn read_statistics(arguments: [u64; 6], return_value: &mut u64) -> Result<(), SystemCallStatus> {
-    let [user_pointer, byte_capacity, reserved_two, reserved_three, reserved_four, reserved_five] =
-        arguments;
+    let [
+        user_pointer,
+        byte_capacity,
+        reserved_two,
+        reserved_three,
+        reserved_four,
+        reserved_five,
+    ] = arguments;
 
     if reserved_two != 0 || reserved_three != 0 || reserved_four != 0 || reserved_five != 0 {
         return Err(SystemCallStatus::InvalidArgument);
@@ -207,6 +214,54 @@ fn read_census(arguments: [u64; 6], return_value: &mut u64) -> Result<(), System
     Ok(())
 }
 
+/// Reads bounded, independently sampled statistics for one supported core.
+fn read_core_census(arguments: [u64; 6], return_value: &mut u64) -> Result<(), SystemCallStatus> {
+    let [
+        core_number,
+        user_pointer,
+        byte_capacity,
+        reserved_three,
+        reserved_four,
+        reserved_five,
+    ] = arguments;
+    if reserved_three != 0 || reserved_four != 0 || reserved_five != 0 {
+        return Err(SystemCallStatus::InvalidArgument);
+    }
+
+    let core_index = usize::try_from(core_number).map_err(|_| SystemCallStatus::InvalidArgument)?;
+    let core = core_locals()
+        .get(core_index)
+        .ok_or(SystemCallStatus::InvalidArgument)?;
+
+    let required_byte_count = observation::CORE_RECORD_BYTE_COUNT;
+    if byte_capacity < required_byte_count as u64 {
+        *return_value = required_byte_count as u64;
+        return Err(SystemCallStatus::BufferTooSmall);
+    }
+
+    let statistics = core.scheduler_statistics();
+    let record: observation::CoreRecord = [
+        observation::RECORD_VERSION,
+        core_index as u64,
+        u64::from(core.is_online()),
+        statistics.queued_actor_count as u64,
+        statistics.tick_count,
+        statistics.actor_dispatch_count,
+        statistics.steal_attempt_count,
+        statistics.stolen_actor_count,
+        statistics.migration_count,
+        statistics.idle_dispatch_count,
+    ];
+    let mut bytes = [0_u8; observation::CORE_RECORD_BYTE_COUNT];
+    if !observation::encode(&record, &mut bytes) {
+        return Err(SystemCallStatus::InvalidArgument);
+    }
+
+    copy_record(user_pointer, &bytes)?;
+    *return_value = core_locals().len() as u64;
+    Ok(())
+}
+
 /// Dispatches one observation call and writes its status and value to the frame.
 ///
 /// `ReadCensus` returns the actor-table length in `x1`; `ReadStatistics` returns
@@ -222,6 +277,16 @@ pub fn read(frame: &mut TrapFrame, statistics: bool) {
         read_census(arguments, &mut return_value)
     };
 
+    frame.general_registers[usize::from(STATUS_REGISTER)] =
+        result.err().unwrap_or(SystemCallStatus::Accepted).number();
+    frame.general_registers[usize::from(VALUE_REGISTER)] = return_value;
+}
+
+/// Handles `ReadCoreCensus` for a single core with checked EL0 copy-out.
+pub fn read_core(frame: &mut TrapFrame) {
+    let arguments: [u64; 6] = core::array::from_fn(|index| frame.general_registers[index]);
+    let mut return_value = 0_u64;
+    let result = read_core_census(arguments, &mut return_value);
     frame.general_registers[usize::from(STATUS_REGISTER)] =
         result.err().unwrap_or(SystemCallStatus::Accepted).number();
     frame.general_registers[usize::from(VALUE_REGISTER)] = return_value;

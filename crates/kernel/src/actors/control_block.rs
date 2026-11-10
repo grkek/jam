@@ -1,9 +1,12 @@
 //! Everything the kernel knows about one actor.
 
-use foundation::{address::LocalAddress, cause::Cause, configuration::Configuration};
+use foundation::{
+    address::LocalAddress, cause::Cause, configuration::Configuration,
+    resource_budget::MAXIMUM_INBOX_MESSAGE_COUNT,
+};
 
 use crate::{
-    actors::{inbox::Inbox, message_pool::MessageHandle, message_storage::ACTOR_INBOX_CAPACITY},
+    actors::{inbox::Inbox, message_pool::MessageHandle},
     memory::address_space::AddressSpace,
 };
 
@@ -12,11 +15,11 @@ use crate::{
 pub enum State {
     /// The slot is unused.
     Free,
-    /// The actor is ready and waits in a run queue.
+    /// The actor is ready and waits in a queue.
     Runnable,
     /// The actor is running on a core.
     Running,
-    /// The actor waits for something, such as a message, and is in no run queue.
+    /// The actor waits for something, such as a message, and is in no queue.
     // Used by `AwaitInbox`, which comes with messaging.
     #[allow(dead_code)]
     Waiting,
@@ -45,12 +48,14 @@ pub struct ControlBlock {
     /// Why the actor ended. Set when it starts exiting, cleared when the slot is reused.
     pub exit_cause: Option<Cause>,
     /// Inbox.
-    pub inbox: Option<Inbox<MessageHandle, LocalAddress, ACTOR_INBOX_CAPACITY>>,
+    pub inbox: Option<Inbox<MessageHandle, LocalAddress, MAXIMUM_INBOX_MESSAGE_COUNT>>,
     /// True only while this incarnation owns one runnable queue entry.
     ///
     /// Protected by this control block's lock; work stealing moves the
     /// encoded queue entry without changing this membership flag.
     pub queued: bool,
+    /// Core that last executed this incarnation; a placement hint, not an affinity constraint.
+    pub last_core_index: Option<usize>,
     /// Message-pool releases still in progress outside the actor lock.
     pub pending_message_releases: usize,
     /// Number of pages in this actor's one currently allocated dynamic region.
@@ -70,6 +75,7 @@ impl ControlBlock {
         exit_cause: None,
         inbox: None,
         queued: false,
+        last_core_index: None,
         pending_message_releases: 0,
         dynamic_memory_page_count: 0,
     };
@@ -78,6 +84,10 @@ impl ControlBlock {
     ///
     /// The caller must hold this control block's exclusive lock.
     pub fn transition_to(&mut self, next_state: State) {
+        if self.state == State::Free || next_state == State::Free {
+            // A recycled slot must not inherit another incarnation's core placement.
+            self.last_core_index = None;
+        }
         super::snapshot::record_transition(self.state, next_state);
         self.state = next_state;
     }

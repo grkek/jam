@@ -16,7 +16,7 @@
 use foundation::address::LocalAddress;
 
 use super::{
-    control_block::{State, ControlBlock},
+    control_block::{ControlBlock, State},
     message_pool::{MessageHandle, MessagePool, PoolError, ReleasedMessage},
     table::with_control_block,
 };
