@@ -41,7 +41,7 @@ use crate::{
         kernel_stack::initialise_kernel_stacks,
         user_memory::run_user_mapping_self_test,
     },
-    platform::current::{SECONDARY_CORE_STARTUP_SUPPORTED, initialise_console_hardware},
+    platform::current::initialise_console_hardware,
     scheduling::{
         core_local::{CORE_COUNT, initialise_queues, register_current_core},
         idle::{initialise_interrupt_stack_tracking, install_idle_frames},
@@ -50,8 +50,11 @@ use crate::{
     warning,
 };
 
+/// Bytes in one megabyte, as reported in the boot log.
+const MEGABYTE_BYTE_COUNT: u64 = 1024 * 1024;
+
 /// Frames the allocator self-test holds at once: one first frame and one second frame.
-const SELF_TEST_ALLOCATED_FRAME_COUNT: usize = 1024;
+const SELF_TEST_ALLOCATED_FRAME_COUNT: usize = 2;
 
 /// Logs an error, then powers off (or parks) the machine.
 macro_rules! fatal {
@@ -154,8 +157,7 @@ fn report_physical_memory(memory_base_address: u64, memory_byte_count: u64) {
         memory_base_address,
         memory_base_address.saturating_add(memory_byte_count),
         memory_byte_count,
-        // The division is exact, because the memory size is a multiple of 1 MiB.
-        memory_byte_count / (1024 * 1024)
+        memory_byte_count / MEGABYTE_BYTE_COUNT
     );
     information!(
         EarlyConsole,
@@ -189,12 +191,13 @@ fn run_frame_allocator_self_test(frame_allocator: &mut FrameAllocator) {
         "Self-test allocation passed: acquired frames at {first_frame:#x} and {second_frame:#x}"
     );
 
-    if frame_allocator.free_frame_count()
-        != initial_free_frame_count.saturating_sub(SELF_TEST_ALLOCATED_FRAME_COUNT)
-    {
+    let expected_free_frame_count =
+        initial_free_frame_count.saturating_sub(SELF_TEST_ALLOCATED_FRAME_COUNT);
+    let actual_free_frame_count = frame_allocator.free_frame_count();
+    if actual_free_frame_count != expected_free_frame_count {
         warning!(
             EarlyConsole,
-            "Self-test warning: frame count mismatch after allocation"
+            "Self-test warning: frame count mismatch after allocation: expected {expected_free_frame_count} free, found {actual_free_frame_count} (started with {initial_free_frame_count})"
         );
     }
 
@@ -457,7 +460,7 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
     initialise_distributor();
 
     // Secondary cores and the timer must be live before an actor can finish and land in idle.
-    if SECONDARY_CORE_STARTUP_SUPPORTED {
+    if crate::platform::current::SECONDARY_CORE_STARTUP_SUPPORTED {
         start_secondary_cores(
             &summary,
             &hardware,

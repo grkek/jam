@@ -37,32 +37,44 @@ pub enum StackError {
     Directory(DirectoryError),
     /// The physical frame allocator ran out of frames.
     OutOfFrames,
-    /// The frame allocator did not hand out adjacent frames for a stack.
-    FramesNotContiguous,
 }
 
 /// Takes the frames of one stack and returns the address of the first.
 ///
-/// Boot runs before the allocator is fragmented, so consecutive allocations are expected to
-/// be adjacent. The check turns a violated assumption into a boot error instead of corruption.
-fn allocate_stack_frames(frame_allocator: &mut FrameAllocator) -> Result<usize, StackError> {
-    let first_frame = frame_allocator
+/// Free RAM is not always one block: a protected region such as the device tree blob can sit in
+/// the middle of it and split a run of frames partway through a stack. When the next frame is
+/// not adjacent, the partial run is abandoned and a new run starts at that frame.
+///
+/// Abandoned frames are not freed, because the allocator would hand them straight back and the
+/// search would never move past the protected region. They are added to `discarded_frame_count`
+/// so the caller can account for every frame this took.
+fn allocate_stack_frames(
+    frame_allocator: &mut FrameAllocator,
+    discarded_frame_count: &mut usize,
+) -> Result<usize, StackError> {
+    let mut first_frame = frame_allocator
         .allocate_frame()
         .ok_or(StackError::OutOfFrames)?;
+    let mut run_frame_count = 1;
 
-    for frame_offset in 1..FRAMES_PER_STACK {
+    while run_frame_count < FRAMES_PER_STACK {
         let frame = frame_allocator
             .allocate_frame()
             .ok_or(StackError::OutOfFrames)?;
-        if frame != first_frame + frame_offset * FRAME_BYTE_COUNT {
-            return Err(StackError::FramesNotContiguous);
+        if frame == first_frame + run_frame_count * FRAME_BYTE_COUNT {
+            run_frame_count += 1;
+        } else {
+            *discarded_frame_count += run_frame_count;
+            first_frame = frame;
+            run_frame_count = 1;
         }
     }
 
     Ok(first_frame)
 }
 
-/// Builds `stack_count` kernel stacks and returns how many frames they took.
+/// Builds `stack_count` kernel stacks and returns how many frames they took, including any
+/// frames abandoned next to protected regions.
 ///
 /// Call once at boot, while the caller still owns the frame allocator and before the first spawn.
 /// Frames already taken are not returned on failure, because boot treats that as fatal.
@@ -70,7 +82,7 @@ fn allocate_stack_frames(frame_allocator: &mut FrameAllocator) -> Result<usize, 
 /// # Errors
 ///
 /// Returns [`StackError`] when the directory cannot be built or the frame allocator
-/// cannot supply adjacent frames.
+/// runs out of frames.
 pub fn initialise_kernel_stacks(
     frame_allocator: &mut FrameAllocator,
     stack_count: usize,
@@ -78,14 +90,15 @@ pub fn initialise_kernel_stacks(
     let directory_frame_count = STACK_DIRECTORY
         .initialise(frame_allocator, stack_count)
         .map_err(StackError::Directory)?;
+    let mut discarded_frame_count = 0_usize;
 
     for stack_index in 0..stack_count {
-        let frame_address = allocate_stack_frames(frame_allocator)?;
+        let frame_address = allocate_stack_frames(frame_allocator, &mut discarded_frame_count)?;
         let base_address = physical_to_virtual(frame_address) as usize;
         STACK_DIRECTORY.set(stack_index, base_address);
     }
 
-    Ok(directory_frame_count + stack_count * FRAMES_PER_STACK)
+    Ok(directory_frame_count + stack_count * FRAMES_PER_STACK + discarded_frame_count)
 }
 
 /// The highest address of the stack belonging to `slot_index`.

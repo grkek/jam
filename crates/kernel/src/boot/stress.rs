@@ -12,7 +12,6 @@ use core::hint::spin_loop;
 
 use foundation::{
     address::LocalAddress,
-    configuration::Configuration,
     stress::{BOOTSTRAP_TAG, Bootstrap, HAMMER_TAG, Scenario},
 };
 
