@@ -4,7 +4,7 @@
 //! current actor accesses its user buffers. Forced remote termination is not
 //! implemented by the lifecycle; adding it requires pinning in-flight copies.
 
-use super::actor_calls::{current_address, pack_local_address};
+use super::actor_calls::current_address;
 use crate::{
     actors::{
         control_block::{ControlBlock, State},
@@ -33,17 +33,16 @@ use foundation::{
         MAXIMUM_RECORD_BYTE_COUNT, RECEIVED_HEADER_BYTE_COUNT, SELECTOR_FLAGS,
     },
     system_call_status::SystemCallStatus,
+    tag::Tag,
 };
 
 /// Decodes a packed local address, rejecting slots that cannot exist on this node.
 fn local_address(packed: u64) -> Result<LocalAddress, SystemCallStatus> {
-    let slot = u32::try_from(packed & u64::from(u32::MAX))
-        .map_err(|_| SystemCallStatus::MalformedAddress)?;
-    let generation = u32::try_from(packed >> 32).map_err(|_| SystemCallStatus::MalformedAddress)?;
-    if slot as usize >= actor_slot_ceiling() {
+    let address = LocalAddress::from_packed(packed);
+    if address.slot_index() as usize >= actor_slot_ceiling() {
         return Err(SystemCallStatus::MalformedAddress);
     }
-    Ok(LocalAddress::new(slot, generation))
+    Ok(address)
 }
 
 /// Resolves identity from the scheduler rather than from an actor argument.
@@ -52,7 +51,7 @@ fn caller() -> Result<LocalAddress, SystemCallStatus> {
     if status != SystemCallStatus::Accepted {
         return Err(status);
     }
-    local_address(packed)
+    Ok(LocalAddress::from_packed(packed))
 }
 
 /// Applies an operation under the current incarnation's actor lock.
@@ -105,7 +104,7 @@ fn selector(
         } else {
             None
         },
-        tag: (flags & MATCH_TAG != 0).then_some(tag),
+        tag: (flags & MATCH_TAG != 0).then_some(Tag::from_raw(tag)),
         correlation: (flags & MATCH_CORRELATION != 0).then_some(correlation),
     })
 }
@@ -140,7 +139,7 @@ pub fn tell_actor(trap_frame: *mut TrapFrame) -> *mut TrapFrame {
             destination,
             MessageMetadata {
                 sender: address,
-                tag,
+                tag: Tag::from_raw(tag),
                 correlation,
             },
             bytes,
@@ -192,8 +191,8 @@ pub fn receive_message(trap_frame: *mut TrapFrame) -> *mut TrapFrame {
         let mut record = [0u8; MAXIMUM_RECORD_BYTE_COUNT];
         let metadata = lease.envelope().metadata;
         for (index, word) in [
-            pack_local_address(metadata.sender),
-            metadata.tag,
+            metadata.sender.to_packed(),
+            metadata.tag.raw(),
             metadata.correlation,
         ]
         .into_iter()

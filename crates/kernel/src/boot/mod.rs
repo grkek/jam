@@ -6,6 +6,3 @@ pub mod secondary_cores;
 
 #[cfg(feature = "stress")]
 pub mod stress;
-
-#[cfg(not(feature = "stress"))]
-pub mod console;

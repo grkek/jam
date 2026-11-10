@@ -69,6 +69,21 @@ fn configure_compilation() -> Result<(), String> {
         let terminal = terminal.to_str().ok_or("terminal ELF path must be UTF-8")?;
         println!("cargo:rerun-if-changed={terminal}");
         println!("cargo:rustc-env=TERMINAL_ELF_PATH={terminal}");
+        println!("cargo:rerun-if-env-changed=FILESYSTEM_ELF_PATH");
+        let filesystem = env::var_os("FILESYSTEM_ELF_PATH")
+            .map(PathBuf::from)
+            .ok_or("FILESYSTEM_ELF_PATH is missing; use cargo xtask build")?;
+        let filesystem = filesystem
+            .canonicalize()
+            .map_err(|error| format!("cannot locate filesystem: {error}"))?;
+        if !filesystem.is_file() {
+            return Err("filesystem ELF is not a file".into());
+        }
+        let filesystem = filesystem
+            .to_str()
+            .ok_or("filesystem ELF path must be UTF-8")?;
+        println!("cargo:rerun-if-changed={filesystem}");
+        println!("cargo:rustc-env=FILESYSTEM_ELF_PATH={filesystem}");
     }
     Ok(())
 }

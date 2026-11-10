@@ -17,6 +17,7 @@ foundation.workspace = true
 pl011_console = { path = "../../services/drivers/pl011_console" }
 
 [features]
+console = []
 guard-page-fault-test = []
 raspberry-pi-4 = []
 stress = []

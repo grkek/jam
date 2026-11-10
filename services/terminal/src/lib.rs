@@ -5,6 +5,8 @@
 
 #![no_std]
 
+pub mod commands;
+
 /// Maximum bytes accepted in a command line.
 pub const MAXIMUM_COMMAND_BYTE_COUNT: usize = 128;
 
@@ -51,6 +53,8 @@ pub enum InputEvent {
     Ignored,
     /// Echo one accepted printable byte.
     Echo(u8),
+    /// Complete the first word or display matching command names.
+    Complete,
     /// Erase one previously echoed character.
     Erase,
     /// Execute the current line, then reset it.
@@ -102,6 +106,66 @@ impl LineEditor {
         self.escape = 0;
     }
 
+    /// Extends the first word to its common completion, or adds a space to an exact name.
+    ///
+    /// Returns true when the line changes. Arguments, discarded input, and
+    /// insufficient buffer space leave the line untouched. The caller may display
+    /// candidates when an ambiguous prefix cannot be extended further.
+    pub fn complete_command(&mut self) -> bool {
+        if self.discarded {
+            return false;
+        }
+        let range = commands::command_range(self.line());
+        if range.end != self.length {
+            return false;
+        }
+        let prefix = self.line().get(range.clone()).unwrap_or(&[]);
+        let mut matches = commands::COMMAND_NAMES
+            .iter()
+            .filter(|name| name.as_bytes().starts_with(prefix));
+        let Some(first) = matches.next() else {
+            return false;
+        };
+        let mut common_length = first.len();
+        let mut unique = true;
+        for candidate in matches {
+            unique = false;
+            common_length = first
+                .bytes()
+                .zip(candidate.bytes())
+                .take(common_length)
+                .take_while(|(left, right)| left == right)
+                .count();
+        }
+        let exact = commands::is_known_command(prefix);
+        let completed_length = if exact { prefix.len() } else { common_length };
+        let add_space = exact || unique;
+        let next_length = range.start + completed_length + usize::from(add_space);
+        if next_length <= self.length || next_length > self.bytes.len() {
+            return false;
+        }
+        if !exact {
+            let Some(source) = first.as_bytes().get(..completed_length) else {
+                return false;
+            };
+            let Some(destination) = self
+                .bytes
+                .get_mut(range.start..range.start + completed_length)
+            else {
+                return false;
+            };
+            destination.copy_from_slice(source);
+        }
+        if add_space {
+            let Some(destination) = self.bytes.get_mut(next_length - 1) else {
+                return false;
+            };
+            *destination = b' ';
+        }
+        self.length = next_length;
+        true
+    }
+
     /// Handles one byte; overlong commands remain discarded until their newline.
     pub fn feed(&mut self, byte: u8) -> InputEvent {
         if byte == b'\n' && self.carriage_return {
@@ -143,7 +207,9 @@ impl LineEditor {
             self.length -= 1;
             return InputEvent::Erase;
         }
-        let byte = if byte == b'\t' { b' ' } else { byte };
+        if byte == b'\t' {
+            return InputEvent::Complete;
+        }
         if !(0x20..=0x7e).contains(&byte) {
             return InputEvent::Ignored;
         }

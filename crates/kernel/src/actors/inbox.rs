@@ -11,7 +11,7 @@
 //! outside this module's responsibility.
 
 use core::array;
-use foundation::address::LocalAddress;
+use foundation::{address::LocalAddress, tag::Tag};
 
 /// Charge computed by the kernel, including descriptor, retained payload, and
 /// any reference-accounting cost. The API prohibits zero-cost messages.
@@ -46,7 +46,7 @@ pub struct MessageMetadata<Sender> {
     /// Kernel-authenticated identity of the actor that sent this message.
     pub sender: Sender,
     /// Application-provided message tag, not a security capability.
-    pub tag: u64,
+    pub tag: Tag,
     /// Application-provided correlation identifier, not a security capability.
     pub correlation: u64,
 }
@@ -87,7 +87,7 @@ pub struct ReceiveSelector<Sender> {
     /// If set, only messages from this authenticated sender match.
     pub sender: Option<Sender>,
     /// If set, only messages with this application tag match.
-    pub tag: Option<u64>,
+    pub tag: Option<Tag>,
     /// If set, only messages with this correlation identifier match.
     pub correlation: Option<u64>,
 }
@@ -103,7 +103,7 @@ impl<Sender: Copy + Eq> ReceiveSelector<Sender> {
     }
 
     /// Creates a selector matching the specified application tag.
-    pub const fn tagged(tag: u64) -> Self {
+    pub const fn tagged(tag: Tag) -> Self {
         Self {
             sender: None,
             tag: Some(tag),

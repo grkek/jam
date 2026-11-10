@@ -8,5 +8,6 @@ pub mod lineage;
 pub mod message_cleanup;
 pub mod message_pool;
 pub mod message_storage;
+pub mod name;
 pub mod snapshot;
 pub mod table;

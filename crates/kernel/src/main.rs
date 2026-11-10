@@ -26,6 +26,8 @@ pub mod scheduling;
 pub mod synchronization;
 /// User-to-kernel system-call dispatch and handlers.
 pub mod system_calls;
+/// User land startup handlers.
+pub mod user_land;
 
 use core::fmt::Write;
 

@@ -1,9 +1,8 @@
 //! Two-actor scenarios: checked copies, then selective request/reply.
 
 use foundation::{
-    address::LocalAddress,
-    stress::{PING_PONG_EXCHANGES, Tag},
-    system_call_status::SystemCallStatus,
+    address::LocalAddress, stress::PING_PONG_EXCHANGES, system_call_status::SystemCallStatus,
+    tag::Tag,
 };
 use runtime::inbox;
 

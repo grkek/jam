@@ -8,27 +8,26 @@ use core::{
 };
 
 use foundation::{
-    address::LocalAddress, stress::Tag, system_call::SystemCall,
-    system_call_status::SystemCallStatus,
+    address::LocalAddress, system_call::SystemCall, system_call_status::SystemCallStatus, tag::Tag,
 };
 use runtime::inbox::{self, MessageSelector};
 
 /// Tags used between stress actors.
 pub mod tag {
-    use foundation::stress::Tag;
+    use foundation::{stress::PROTOCOL, tag::Tag};
 
-    pub const COPY_CHECK: Tag = 10;
-    pub const PING: Tag = 42;
-    pub const NOISE_OTHER: Tag = 43;
-    pub const COLLECT: Tag = 8;
-    pub const SELF_FILL: Tag = 77;
-    pub const SIZE_PROBE: Tag = 5;
-    pub const REQUEST: Tag = 100;
-    pub const REPLY: Tag = 101;
-    pub const DEAD_LETTER: Tag = 1;
-    pub const FILL: Tag = 9;
-    pub const NEVER_SENT: Tag = 0xdead;
-    pub const LEFTOVER: Tag = 99;
+    pub const COPY_CHECK: Tag = Tag::new(PROTOCOL, 0x0010);
+    pub const PING: Tag = Tag::new(PROTOCOL, 42);
+    pub const NOISE_OTHER: Tag = Tag::new(PROTOCOL, 43);
+    pub const COLLECT: Tag = Tag::new(PROTOCOL, 8);
+    pub const SELF_FILL: Tag = Tag::new(PROTOCOL, 77);
+    pub const SIZE_PROBE: Tag = Tag::new(PROTOCOL, 5);
+    pub const REQUEST: Tag = Tag::new(PROTOCOL, 100);
+    pub const REPLY: Tag = Tag::new(PROTOCOL, 101);
+    pub const DEAD_LETTER: Tag = Tag::new(PROTOCOL, 1);
+    pub const FILL: Tag = Tag::new(PROTOCOL, 9);
+    pub const NEVER_SENT: Tag = Tag::new(PROTOCOL, 0xdead);
+    pub const LEFTOVER: Tag = Tag::new(PROTOCOL, 99);
 }
 
 pub const PAGE_SIZE: usize = 4096;
@@ -106,7 +105,7 @@ pub fn receive_into_raw_buffer(pointer: u64, length: u64) -> u64 {
     unsafe {
         raw_system_call(
             SystemCall::ReceiveMessage,
-            [pointer, length, 2, 0, tag::COPY_CHECK, 0],
+            [pointer, length, 2, 0, tag::COPY_CHECK.raw(), 0],
         )
         .0
     }

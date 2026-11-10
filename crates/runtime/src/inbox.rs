@@ -11,6 +11,7 @@ use foundation::{
     },
     system_call::SystemCall,
     system_call_status::SystemCallStatus,
+    tag::Tag,
 };
 
 /// Optional filters applied together when selecting an inbox message.
@@ -19,7 +20,7 @@ pub struct MessageSelector {
     /// Required authenticated sender, or any sender.
     pub sender: Option<LocalAddress>,
     /// Required application tag, or any tag.
-    pub tag: Option<u64>,
+    pub tag: Option<Tag>,
     /// Required application correlation identifier, or any identifier.
     pub correlation: Option<u64>,
 }
@@ -39,8 +40,8 @@ impl MessageSelector {
         }
         [
             flags,
-            self.sender.map_or(0, pack),
-            self.tag.unwrap_or(0),
+            self.sender.map_or(0, LocalAddress::to_packed),
+            self.tag.map_or(0, Tag::raw),
             self.correlation.unwrap_or(0),
         ]
     }
@@ -61,16 +62,11 @@ pub struct ReceivedMessage<'buffer> {
     /// Kernel-authenticated sender identity.
     pub sender: LocalAddress,
     /// Application tag.
-    pub tag: u64,
+    pub tag: Tag,
     /// Application correlation identifier.
     pub correlation: u64,
     /// Copied payload; no references to kernel storage remain.
     pub payload: &'buffer [u8],
-}
-
-/// Packs an actor incarnation into the established one-register representation.
-fn pack(address: LocalAddress) -> u64 {
-    u64::from(address.slot_index()) | (u64::from(address.generation_counter()) << 32)
 }
 
 /// Converts register results into a typed status and preserves size feedback.
@@ -96,7 +92,7 @@ fn result(status: u64, value: u64) -> Result<u64, MessagingError> {
 /// Reports oversized payloads, invalid addresses, or storage exhaustion.
 pub fn tell_actor(
     destination: LocalAddress,
-    tag: u64,
+    tag: Tag,
     correlation: u64,
     payload: &[u8],
 ) -> Result<(), MessagingError> {
@@ -105,10 +101,10 @@ pub fn tell_actor(
         invoke(
             SystemCall::TellActor.number(),
             [
-                pack(destination),
+                destination.to_packed(),
                 payload.as_ptr() as u64,
                 payload.len() as u64,
-                tag,
+                tag.raw(),
                 correlation,
                 0,
             ],
@@ -124,18 +120,7 @@ pub fn tell_actor(
 pub fn current_address() -> Result<LocalAddress, MessagingError> {
     // SAFETY: This call has no pointers or input arguments.
     let (status, value) = unsafe { invoke(SystemCall::CurrentAddress.number(), [0; 6]) };
-    unpack(result(status, value)?)
-}
-
-/// Decodes the canonical local address representation without truncating values.
-fn unpack(packed: u64) -> Result<LocalAddress, MessagingError> {
-    let error = MessagingError {
-        status: SystemCallStatus::MalformedAddress,
-        required_byte_count: 0,
-    };
-    let slot = u32::try_from(packed & u64::from(u32::MAX)).map_err(|_| error)?;
-    let generation = u32::try_from(packed >> 32).map_err(|_| error)?;
-    Ok(LocalAddress::new(slot, generation))
+    Ok(LocalAddress::from_packed(result(status, value)?))
 }
 
 /// Attempts a nonblocking copy into a record buffer, returning its used length.
@@ -177,8 +162,8 @@ fn decode(output: &[u8], length: usize) -> Result<ReceivedMessage<'_>, Messaging
         Ok(u64::from_le_bytes(bytes))
     };
     Ok(ReceivedMessage {
-        sender: unpack(word(0)?)?,
-        tag: word(8)?,
+        sender: LocalAddress::from_packed(word(0)?),
+        tag: Tag::from_raw(word(8)?),
         correlation: word(16)?,
         payload: record.get(RECEIVED_HEADER_BYTE_COUNT..).ok_or(error)?,
     })

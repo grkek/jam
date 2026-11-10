@@ -1,13 +1,15 @@
 //! Scenario catalogue and bootstrap wire format shared by the kernel's boot-time
 //! stress plan and the EL0 stress program.
 
-/// Message tag type used by the stress program. Change here if the runtime differs.
-pub type Tag = u64;
+use crate::tag::Tag;
+
+/// Protocol prefix shared by the stress actors and the kernel's stress traffic ("ST").
+pub const PROTOCOL: u16 = 0x5354;
 
 /// Tag of the bootstrap message every stress actor waits for first.
-pub const BOOTSTRAP_TAG: Tag = 0;
+pub const BOOTSTRAP_TAG: Tag = Tag::new(PROTOCOL, 0x0001);
 /// Tag of the junk the kernel sends to idle or dead actors.
-pub const HAMMER_TAG: Tag = 3;
+pub const HAMMER_TAG: Tag = Tag::new(PROTOCOL, 0x0002);
 /// Little-endian `u64` words in a bootstrap message.
 pub const BOOTSTRAP_WORDS: usize = 5;
 /// Encoded size of a bootstrap message.

@@ -9,7 +9,7 @@ use foundation::{address::LocalAddress, configuration::Configuration};
 
 use super::control_block::{ControlBlock, State};
 use crate::{
-    actors::{divider::system_limit, inbox::Inbox},
+    actors::{divider::system_limit, inbox::Inbox, name::Name},
     architecture::aarch64::{
         early_console::EarlyConsole, memory_management_unit::invalidate_address_space_identifier,
     },
@@ -196,6 +196,31 @@ fn inbox_byte_budget(configuration: &Configuration) -> usize {
     usize::try_from(configuration.resource_budget.inbox_byte_budget).unwrap_or(usize::MAX)
 }
 
+/// Finds the live actor registered under `name`.
+#[must_use]
+pub fn find_actor_by_name(name: Name) -> Option<LocalAddress> {
+    if name == Name::UNNAMED {
+        return None;
+    }
+    for slot_index in 0..actor_table_length() {
+        let found = with_control_block(slot_index, |control_block| {
+            if matches!(control_block.state, State::Free | State::Exiting)
+                || control_block.name != name
+            {
+                return None;
+            }
+            Some(control_block.generation_counter)
+        })
+        .flatten();
+
+        if let Some(generation_counter) = found {
+            let slot_number = u32::try_from(slot_index).ok()?;
+            return Some(LocalAddress::new(slot_number, generation_counter));
+        }
+    }
+    None
+}
+
 /// Starts an actor at `entry_point` in kernel mode, in its own address space.
 ///
 /// initialises the actor's address space, execution context, and inbox
@@ -207,8 +232,9 @@ fn inbox_byte_budget(configuration: &Configuration) -> usize {
 /// actor-table slot, initial kernel stack, or address-space memory is available.
 pub fn spawn_kernel_actor(
     entry_point: extern "C" fn() -> !,
-    parent_address: Option<LocalAddress>,
+    name: Name,
     configuration: Configuration,
+    parent_address: Option<LocalAddress>,
 ) -> Result<LocalAddress, SpawnError> {
     check_budget(&configuration)?;
 
@@ -251,6 +277,7 @@ pub fn spawn_kernel_actor(
 
         control_block.exit_cause = None;
         control_block.parent_address = parent_address;
+        control_block.name = name;
         control_block.configuration = Some(configuration);
         control_block.saved_frame_address = frame_address;
         control_block.address_space = Some(address_space);
@@ -281,9 +308,10 @@ pub fn spawn_kernel_actor(
 /// Returns [`SpawnError`] when the budget exceeds the system ceiling, when no actor
 /// slot, kernel stack, or physical memory is available, or when the user image
 /// cannot be constructed.
-fn spawn_user(
-    parent_address: Option<LocalAddress>,
+fn spawn_user_actor(
+    name: Name,
     configuration: Configuration,
+    parent_address: Option<LocalAddress>,
     initial_argument: u64,
     build_image: impl FnOnce(&mut FrameAllocator, u64) -> Result<UserImage, UserMapError>,
 ) -> Result<LocalAddress, SpawnError> {
@@ -383,6 +411,7 @@ fn spawn_user(
         // Initialise actor lifecycle and execution resources.
         control_block.exit_cause = None;
         control_block.parent_address = parent_address;
+        control_block.name = name;
         control_block.configuration = Some(configuration);
         control_block.saved_frame_address = frame_address;
         control_block.address_space = Some(address_space);
@@ -427,12 +456,13 @@ fn spawn_user(
 /// mapping, [`SpawnError::OutOfMemory`] when frame allocation fails,
 /// [`SpawnError::BudgetExceedsCeiling`] when the budget is too large, or the corresponding
 /// error when the table or stack is unavailable.
-pub fn spawn_user_actor(
+pub fn spawn_light_user_actor(
     program: &'static [u8],
-    parent_address: Option<LocalAddress>,
+    name: Name,
     configuration: Configuration,
+    parent_address: Option<LocalAddress>,
 ) -> Result<LocalAddress, SpawnError> {
-    spawn_user_actor_with_argument(program, parent_address, configuration, 0)
+    spawn_user_actor_with_argument(program, name, configuration, parent_address, 0)
 }
 
 /// Starts a known ELF with a kernel-authenticated scalar in its initial x0.
@@ -443,13 +473,15 @@ pub fn spawn_user_actor(
 /// Returns the same image, stack, budget, and allocation errors as `spawn_user_actor`.
 pub fn spawn_user_actor_with_argument(
     program: &'static [u8],
-    parent_address: Option<LocalAddress>,
+    name: Name,
     configuration: Configuration,
+    parent_address: Option<LocalAddress>,
     initial_argument: u64,
 ) -> Result<LocalAddress, SpawnError> {
-    spawn_user(
-        parent_address,
+    spawn_user_actor(
+        name,
         configuration,
+        parent_address,
         initial_argument,
         |frame_allocator, private_value| {
             let (address_space, entry_point) =
@@ -468,12 +500,14 @@ pub fn spawn_user_actor_with_argument(
 /// Returns [`SpawnError`] when no slot or memory is available, or the budget is too large.
 pub fn spawn_raw_user_actor(
     program: &'static [u8],
-    parent_address: Option<LocalAddress>,
+    name: Name,
     configuration: Configuration,
+    parent_address: Option<LocalAddress>,
 ) -> Result<LocalAddress, SpawnError> {
-    spawn_user(
-        parent_address,
+    spawn_user_actor(
+        name,
         configuration,
+        parent_address,
         0,
         |frame_allocator, private_value| {
             let address_space = build_user_address_space(frame_allocator, private_value, program)?;

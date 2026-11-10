@@ -6,6 +6,7 @@ members = [
     "crates/runtime",
     "services/genesis",
     "services/terminal",
+    "services/filesystem",
     "services/registry",
     "services/observatory",
     "services/distribution",

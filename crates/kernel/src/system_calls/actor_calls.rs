@@ -9,8 +9,21 @@ use crate::{
 };
 
 /// Packs a local address into one register: generation in the high half, slot in the low half.
+#[must_use]
 pub fn pack_local_address(address: LocalAddress) -> u64 {
     u64::from(address.slot_index()) | (u64::from(address.generation_counter()) << 32)
+}
+
+/// Unpacks a register value made by [`pack_local_address`]: slot in the low half,
+/// generation in the high half.
+#[must_use]
+pub fn unpack_local_address(packed: u64) -> LocalAddress {
+    let [s0, s1, s2, s3, g0, g1, g2, g3] = packed.to_le_bytes();
+
+    LocalAddress::new(
+        u32::from_le_bytes([s0, s1, s2, s3]),
+        u32::from_le_bytes([g0, g1, g2, g3]),
+    )
 }
 
 /// `CurrentAddress`: status in `x0`, packed `LocalAddress` in `x1`.

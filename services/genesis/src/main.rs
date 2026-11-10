@@ -32,9 +32,12 @@ fn run() -> ! {
     support::finish()
 }
 
+#[cfg(not(feature = "stress"))]
+use foundation::tag::Tag;
+
 /// Tag nobody sends, so waiting on it never completes.
 #[cfg(not(feature = "stress"))]
-const IDLE_TAG: u64 = 0xdead;
+const IDLE_TAG: Tag = Tag::new(0xdead, 0xbeef);
 
 /// Waits for messages forever; there is nothing to bootstrap yet.
 #[cfg(not(feature = "stress"))]

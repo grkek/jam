@@ -1,4 +1,4 @@
-//! EL0 terminal actor: command parsing, line editing, and read-only observations.
+//! EL0 terminal actor: command editing, observations, and directory requests.
 //!
 //! Every console byte travels through actor messages. This actor has no device
 //! mapping and no direct access to kernel structures. The driver address arrives
@@ -11,13 +11,14 @@
 #![no_std]
 #![no_main]
 
-#[cfg(feature = "observation-tests")]
-mod validation;
+mod directory_commands;
+mod line_display;
 
 use core::cmp::Reverse;
 use core::fmt::{self, Write};
 use foundation::{
     address::LocalAddress, console, observation::State, system_call_status::SystemCallStatus,
+    tag::Tag,
 };
 use runtime::{
     allocator::{self, Allocation},
@@ -29,10 +30,10 @@ use terminal::{InputEvent, LineEditor};
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
-const RED: &str = "\x1b[31m";
-const GREEN: &str = "\x1b[32m";
-const YELLOW: &str = "\x1b[33m";
-const CYAN: &str = "\x1b[36m";
+const RED: &str = "\x1b[1;91m";
+const GREEN: &str = "\x1b[1;32m";
+const YELLOW: &str = "\x1b[1;33m";
+const CYAN: &str = "\x1b[1;36m";
 
 /// Width of the usage bars in characters.
 const BAR_WIDTH: u64 = 24;
@@ -67,13 +68,6 @@ fn fail() -> ! {
     unsafe {
         core::arch::asm!("brk #1", options(noreturn));
     }
-}
-
-/// Decodes the established packed local-address layout.
-fn address(packed: u64) -> LocalAddress {
-    let slot = u32::try_from(packed & u64::from(u32::MAX)).unwrap_or_else(|_| fail());
-    let generation = u32::try_from(packed >> 32).unwrap_or_else(|_| fail());
-    LocalAddress::new(slot, generation)
 }
 
 /// First violation detected while checking the caller's newly allocated pages.
@@ -200,7 +194,7 @@ impl<const N: usize> Write for Text<N> {
 /// Renders an address to a string so width and alignment specifiers apply to it.
 fn address_text(packed: u64) -> Text<48> {
     let mut text = Text::new();
-    write!(text, "{}", address(packed)).unwrap_or_else(|_| fail());
+    write!(text, "{}", LocalAddress::from_packed(packed)).unwrap_or_else(|_| fail());
     text
 }
 
@@ -220,7 +214,7 @@ fn parse_address(word: &[u8]) -> Option<u64> {
     } else {
         (first.parse::<u32>().ok()?, second.parse::<u32>().ok()?)
     };
-    Some(u64::from(slot) | (u64::from(generation) << 32))
+    Some(LocalAddress::new(slot, generation).to_packed())
 }
 
 /// Returns user text only when it is safe to echo back to the terminal.
@@ -496,13 +490,15 @@ impl Write for Sink<'_> {
 /// Stop-and-wait console transport bounds both actors' inbox occupancy.
 struct Terminal {
     driver: LocalAddress,
+    /// Boot-bound directory service, resolved lazily through the console driver.
+    filesystem_address: Option<LocalAddress>,
     correlation: u64,
     allocation: Option<Allocation>,
 }
 impl Terminal {
     /// Sends one request, retrying only admission failures before it is accepted.
     #[inline(never)]
-    fn request(&mut self, tag: u64, payload: &[u8]) -> u64 {
+    fn request(&mut self, tag: Tag, payload: &[u8]) -> u64 {
         self.correlation = self.correlation.checked_add(1).unwrap_or_else(|| fail());
         loop {
             match inbox::tell_actor(self.driver, tag, self.correlation, payload) {
@@ -518,7 +514,7 @@ impl Terminal {
     /// Waits for the driver's response to one specific request.
     fn response<'buffer>(
         &self,
-        tag: u64,
+        tag: Tag,
         correlation: u64,
         record: &'buffer mut [u8],
     ) -> &'buffer [u8] {
@@ -1129,6 +1125,15 @@ impl Terminal {
         for (usage, description) in [
             ("help", "Show available commands"),
             (
+                "list-directory [path]",
+                "ld: list immediate children (default /)",
+            ),
+            (
+                "create-directory <path>",
+                "cd: create one directory in memory",
+            ),
+            ("", "Absolute paths; parent must exist; no disk persistence"),
+            (
                 "actors [state] [sort]",
                 "List actors, optionally filtered and sorted",
             ),
@@ -1153,7 +1158,7 @@ impl Terminal {
         ] {
             self.print(format_args!("   {BOLD}{usage:<24}{RESET}{description}\n"));
         }
-        self.print(format_args!("{DIM}   aliases: ? = help{RESET}\n"));
+        self.print(format_args!("{DIM}   Tab completes command names; green = known, red = unknown.\n   aliases: ? = help, ld = list-directory, cd = create-directory{RESET}\n"));
     }
 
     /// Reports and returns whether a command that takes no arguments received any.
@@ -1232,6 +1237,8 @@ impl Terminal {
                     self.help();
                 }
             }
+            b"list-directory" | b"ld" => self.directory_command(false, arguments),
+            b"create-directory" | b"cd" => self.directory_command(true, arguments),
             b"actors" => self.actors_command(arguments),
             b"actor" => self.actor_command(arguments),
             b"tree" => {
@@ -1271,9 +1278,10 @@ impl Terminal {
 /// Uses its boot-authenticated driver binding, then handles interactive input.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(driver_identity: u64) -> ! {
-    let driver = address(driver_identity);
+    let driver = LocalAddress::from_packed(driver_identity);
     let mut terminal = Terminal {
         driver,
+        filesystem_address: None,
         correlation: 0,
         allocation: None,
     };
@@ -1291,8 +1299,8 @@ pub extern "C" fn _start(driver_identity: u64) -> ! {
         for &byte in input.get(..length).unwrap_or_else(|| fail()) {
             match editor.feed(byte) {
                 InputEvent::Ignored => {}
-                InputEvent::Echo(byte) => terminal.write(&[byte]),
-                InputEvent::Erase => terminal.write(b"\x08 \x08"),
+                InputEvent::Echo(_) | InputEvent::Erase => terminal.redraw_line(editor.line()),
+                InputEvent::Complete => terminal.complete_line(&mut editor),
                 InputEvent::Cancel => {
                     terminal.write(b"^C\n");
                     terminal.write(PROMPT);

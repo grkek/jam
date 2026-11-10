@@ -76,6 +76,22 @@ impl LocalAddress {
             ]),
         }
     }
+
+    /// Slot in the low half, generation in the high half.
+    #[must_use]
+    pub fn to_packed(self) -> u64 {
+        u64::from(self.slot_index()) | (u64::from(self.generation_counter()) << 32)
+    }
+
+    /// Inverse of [`Self::to_packed`].
+    #[must_use]
+    pub fn from_packed(packed: u64) -> Self {
+        let [s0, s1, s2, s3, g0, g1, g2, g3] = packed.to_le_bytes();
+        Self::new(
+            u32::from_le_bytes([s0, s1, s2, s3]),
+            u32::from_le_bytes([g0, g1, g2, g3]),
+        )
+    }
 }
 
 impl core::fmt::Display for LocalAddress {

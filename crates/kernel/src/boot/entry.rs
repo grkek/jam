@@ -373,7 +373,20 @@ fn after_bootstrap(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> !
 /// Starts Genesis, the terminal, and the temporary polling console driver.
 #[cfg(not(feature = "stress"))]
 fn after_bootstrap(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> ! {
-    if let Err(reason) = super::console::start() {
+    use crate::{
+        actors::{divider::default_configuration, name::Name, table::spawn_light_user_actor},
+        memory::user_program::EL0_GENESIS_PROGRAM,
+    };
+
+    let _ = {
+        let name = Name::from_static("Genesis");
+        let configuration = default_configuration();
+
+        spawn_light_user_actor(EL0_GENESIS_PROGRAM, name, configuration, None)
+    }
+    .map_err(|_| "Genesis creation failed");
+
+    if let Err(reason) = crate::user_land::current::start(conduit) {
         fatal!(conduit, "Userland bootstrap failed: {reason}");
     }
     loop {

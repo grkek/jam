@@ -6,7 +6,7 @@ use foundation::{
 };
 
 use crate::{
-    actors::{inbox::Inbox, message_pool::MessageHandle},
+    actors::{inbox::Inbox, message_pool::MessageHandle, name::Name},
     memory::address_space::AddressSpace,
 };
 
@@ -37,6 +37,8 @@ pub struct ControlBlock {
     pub generation_counter: u32,
     /// Who spawned the actor. `None` for actors the kernel starts itself.
     pub parent_address: Option<LocalAddress>,
+    /// Lookup name. `UNNAMED` while the slot is free or the actor has no name.
+    pub name: Name,
     /// What the actor was spawned with. `None` while the slot is free.
     pub configuration: Option<Configuration>,
     /// Address of the frame the actor resumes from while it is not running.
@@ -68,6 +70,7 @@ impl ControlBlock {
         state: State::Free,
         generation_counter: 1,
         parent_address: None,
+        name: Name::UNNAMED,
         configuration: None,
         saved_frame_address: 0,
         address_space: None,
