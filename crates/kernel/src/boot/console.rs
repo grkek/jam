@@ -43,7 +43,7 @@ pub fn start() -> Result<(), &'static str> {
     let genesis = spawn_user_actor(EL0_GENESIS_PROGRAM, None, default_configuration())
         .map_err(|_| "Genesis creation failed")?;
 
-    let driver = spawn_kernel_actor(run_driver, None, default_configuration())
+    let driver = spawn_kernel_actor(driver, Some(genesis), default_configuration())
         .map_err(|_| "Console-Driver creation failed")?;
 
     let terminal = spawn_user_actor_with_argument(
@@ -73,7 +73,7 @@ struct Response {
 }
 
 /// Polls UART receive and authenticated output requests in bounded batches.
-extern "C" fn run_driver() -> ! {
+extern "C" fn driver() -> ! {
     let (_, own) = current_address();
     let own = address(own);
     let terminal = loop {

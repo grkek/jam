@@ -36,6 +36,8 @@ cargo xtask build --board raspberry-pi-4      # build Raspberry Pi 4
 cargo xtask build --release                   # build every board in release mode
 cargo xtask run                               # boot QEMU virtual board with eight cores
 cargo xtask run-raspberry-pi-4                # boot QEMU on Raspberry Pi 4 board
+cargo xtask run   --stress                    # boot QEMU virtual board with eight cores and run the stress test
+cargo xtask run-raspberry-pi-4 --stress       # boot QEMU on Raspberry Pi 4 board and run the stress test
 ```
 
 Build output goes into `target/<board>/`.
@@ -49,20 +51,6 @@ To boot a Raspberry Pi 4, copy `kernel8.img`, `config.txt`, `start4.elf`,
 `fixup4.dat`, `bcm2711-rpi-4-b.dtb`, and `overlays/` from
 `target/raspberry-pi-4/` to a FAT32 boot partition on an SD card.
 The `firmware/` checkout itself does not belong on the card.
-
-### Stress test
-
-The genesis program doubles as a messaging stress test. At boot the kernel starts
-dozens of actors that flood, fuzz, crash and churn scenarios.
-
-CI boots both boards and checks that no actor was stranded, no dead address accepted
-a message, and the number of reported actor faults equals the number designed in.
-Run the same check locally:
-
-```sh
-bash tools/ci/boot-test.sh boot.log 120 cargo xtask run
-bash tools/ci/boot-test.sh boot.log 120 cargo xtask run-raspberry-pi-4
-```
 
 ## Contribute
 
