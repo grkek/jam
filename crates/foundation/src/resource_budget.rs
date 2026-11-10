@@ -176,9 +176,9 @@ fn derive_actor_population(capacity: Capacity) -> Result<ActorPopulation, LimitE
     // The count was clamped to `actor_slot_ceiling`, which is a `usize`, so this cannot fail.
     let maximum_actors = usize::try_from(maximum_actors).unwrap_or(usize::MAX);
 
-    let actor_table_frame_count = frame_count_for_byte_count(
-        widen_to_u128(maximum_actors) * widen_to_u128(capacity.actor_slot_byte_count),
-    );
+    // Each slot occupies whole frames in the real table, so the table's total is the per-actor
+    // frame count times the population, not the packed byte total.
+    let actor_table_frame_count = table_frame_count_per_actor * widen_to_u128(maximum_actors);
 
     Ok(ActorPopulation {
         maximum_actors,

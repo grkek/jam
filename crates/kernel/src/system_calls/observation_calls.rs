@@ -85,16 +85,20 @@ fn statistics_record() -> Result<observation::StatisticsRecord, SystemCallStatus
     })
     .ok_or(SystemCallStatus::UnsupportedOperation)?;
 
-    let message_pool = MESSAGE_POOL.lock().statistics();
+    // One lock acquisition, so the capacity and the counts come from the same moment.
+    let (message_pool_capacity, message_pool_statistics) = {
+        let message_pool = MESSAGE_POOL.lock();
+        (message_pool.capacity(), message_pool.statistics())
+    };
     let (occupied_actors, waiting_actors) = crate::actors::snapshot::current();
 
     Ok([
         observation::RECORD_VERSION,
         total_frames as u64,
         free_frames as u64,
-        MAXIMUM_INBOX_MESSAGE_COUNT as u64,
-        message_pool.allocated as u64,
-        message_pool.charged_bytes as u64,
+        message_pool_capacity as u64,
+        message_pool_statistics.allocated as u64,
+        message_pool_statistics.charged_bytes as u64,
         online_core_count() as u64,
         actor_table_length() as u64,
         occupied_actors as u64,
