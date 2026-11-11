@@ -12,6 +12,7 @@
 #![no_main]
 
 mod directory_commands;
+mod directory_path;
 mod line_display;
 
 use core::cmp::Reverse;
@@ -52,8 +53,10 @@ const CRITICAL_PERCENT: u64 = 85;
 
 /// Most actors a single census snapshot keeps; bounds this actor's stack use.
 const SNAPSHOT_LIMIT: usize = 32;
-/// Bytes buffered per console write while formatting; keeps `print` small on the stack.
-const PRINT_CHUNK: usize = 256;
+/// One console payload per formatting buffer; bounds stack use and avoids split writes.
+const PRINT_CHUNK: usize = console::MAXIMUM_OUTPUT_BYTE_COUNT;
+/// Maximum admitted console writes awaiting acknowledgements.
+const MAXIMUM_OUTSTANDING_OUTPUT_COUNT: usize = 4;
 /// Most words a command line may hold (the command plus its arguments).
 const MAXIMUM_WORDS: usize = 5;
 
@@ -487,18 +490,25 @@ impl Write for Sink<'_> {
     }
 }
 
-/// Stop-and-wait console transport bounds both actors' inbox occupancy.
+/// Bounded output pipeline with ordered acknowledgements and pulled input.
 struct Terminal {
     driver: LocalAddress,
     /// Boot-bound directory service, resolved lazily through the console driver.
     filesystem_address: Option<LocalAddress>,
+    /// Canonical working directory owned by this terminal session.
+    working_directory: directory_path::DirectoryPath,
     correlation: u64,
+    /// Correlations in send order; payload storage belongs to the message pool.
+    outstanding_output: [u64; MAXIMUM_OUTSTANDING_OUTPUT_COUNT],
+    /// Initialized entries at the beginning of `outstanding_output`.
+    outstanding_output_count: usize,
     allocation: Option<Allocation>,
 }
 impl Terminal {
     /// Sends one request, retrying only admission failures before it is accepted.
     #[inline(never)]
     fn request(&mut self, tag: Tag, payload: &[u8]) -> u64 {
+        self.flush_output();
         self.correlation = self.correlation.checked_add(1).unwrap_or_else(|| fail());
         loop {
             match inbox::tell_actor(self.driver, tag, self.correlation, payload) {
@@ -530,18 +540,62 @@ impl Terminal {
         .payload
     }
 
-    /// Writes bounded chunks and waits for each physical-output acknowledgement.
+    /// Retires the oldest admitted write using authenticated correlation matching.
+    fn complete_oldest_output(&mut self) {
+        if self.outstanding_output_count == 0 {
+            return;
+        }
+        let correlation = *self.outstanding_output.first().unwrap_or_else(|| fail());
+        let mut record = [0_u8; 24];
+        if !self
+            .response(console::WRITTEN_TAG, correlation, &mut record)
+            .is_empty()
+        {
+            fail();
+        }
+        self.outstanding_output
+            .copy_within(1..self.outstanding_output_count, 0);
+        self.outstanding_output_count -= 1;
+    }
+
+    /// Completes all physical output before a control request or input wait.
+    fn flush_output(&mut self) {
+        while self.outstanding_output_count != 0 {
+            self.complete_oldest_output();
+        }
+    }
+
+    /// Admits at most four ordered chunks without waiting after every send.
+    ///
+    /// Admission pressure retires an existing write before retrying. A successful
+    /// admission is never replayed, and only correlations occupy terminal storage.
+    /// `request` drains the pipeline before asking for input or service bindings.
     #[inline(never)]
     fn write(&mut self, bytes: &[u8]) {
         for chunk in bytes.chunks(console::MAXIMUM_OUTPUT_BYTE_COUNT) {
-            let correlation = self.request(console::WRITE_TAG, chunk);
-            let mut record = [0_u8; 24];
-            if !self
-                .response(console::WRITTEN_TAG, correlation, &mut record)
-                .is_empty()
-            {
-                fail();
+            if self.outstanding_output_count == MAXIMUM_OUTSTANDING_OUTPUT_COUNT {
+                self.complete_oldest_output();
             }
+            self.correlation = self.correlation.checked_add(1).unwrap_or_else(|| fail());
+            let correlation = self.correlation;
+            loop {
+                match inbox::tell_actor(self.driver, console::WRITE_TAG, correlation, chunk) {
+                    Ok(()) => break,
+                    Err(error) if error.status == SystemCallStatus::BudgetExhausted => {
+                        if self.outstanding_output_count == 0 {
+                            core::hint::spin_loop();
+                        } else {
+                            self.complete_oldest_output();
+                        }
+                    }
+                    Err(_) => fail(),
+                }
+            }
+            *self
+                .outstanding_output
+                .get_mut(self.outstanding_output_count)
+                .unwrap_or_else(|| fail()) = correlation;
+            self.outstanding_output_count += 1;
         }
     }
 
@@ -1118,21 +1172,33 @@ impl Terminal {
         ));
     }
 
-    /// Prints the command list.
+    /// Streams the command list through one buffer, flushing full payloads and the tail.
     #[inline(never)]
     fn help(&mut self) {
-        self.heading("Commands");
+        let mut sink = Sink {
+            terminal: self,
+            bytes: [0; PRINT_CHUNK],
+            length: 0,
+        };
+        sink.write_fmt(format_args!("{BOLD}{CYAN} Commands{RESET}\n"))
+            .unwrap_or_else(|_| fail());
         for (usage, description) in [
             ("help", "Show available commands"),
             (
-                "list-directory [path]",
-                "ld: list immediate children (default /)",
+                "list-directory [-la] [path]",
+                "ld: list children of the working directory or path",
             ),
             (
-                "create-directory <path>",
-                "cd: create one directory in memory",
+                "make-directory <path>",
+                "md: create one directory in memory",
             ),
-            ("", "Absolute paths; parent must exist; no disk persistence"),
+            (
+                "change-directory [path]",
+                "cd: change directory (default /)",
+            ),
+            ("working-directory", "wd: show the current directory"),
+            ("", "ld: -l/--long, -a/--all, -d/--directories"),
+            ("", "Relative paths, . and .. supported; memory only"),
             (
                 "actors [state] [sort]",
                 "List actors, optionally filtered and sorted",
@@ -1156,9 +1222,12 @@ impl Terminal {
             ("version", "Show the terminal version"),
             ("clear", "Clear the screen"),
         ] {
-            self.print(format_args!("   {BOLD}{usage:<24}{RESET}{description}\n"));
+            sink.write_fmt(format_args!("   {BOLD}{usage:<24}{RESET}{description}\n"))
+                .unwrap_or_else(|_| fail());
         }
-        self.print(format_args!("{DIM}   Tab completes command names; green = known, red = unknown.\n   aliases: ? = help, ld = list-directory, cd = create-directory{RESET}\n"));
+        sink.write_fmt(format_args!("{DIM}   Tab completes command names; green = known, red = unknown.\n   aliases: ? = help, ld = list-directory, md = make-directory, cd = change-directory, wd = working-directory{RESET}\n"))
+            .unwrap_or_else(|_| fail());
+        sink.flush();
     }
 
     /// Reports and returns whether a command that takes no arguments received any.
@@ -1238,7 +1307,9 @@ impl Terminal {
                 }
             }
             b"list-directory" | b"ld" => self.directory_command(false, arguments),
-            b"create-directory" | b"cd" => self.directory_command(true, arguments),
+            b"make-directory" | b"md" => self.directory_command(true, arguments),
+            b"change-directory" | b"cd" => self.change_directory(arguments),
+            b"working-directory" | b"wd" => self.show_working_directory(arguments),
             b"actors" => self.actors_command(arguments),
             b"actor" => self.actor_command(arguments),
             b"tree" => {
@@ -1282,7 +1353,10 @@ pub extern "C" fn _start(driver_identity: u64) -> ! {
     let mut terminal = Terminal {
         driver,
         filesystem_address: None,
+        working_directory: directory_path::DirectoryPath::root(),
         correlation: 0,
+        outstanding_output: [0; MAXIMUM_OUTSTANDING_OUTPUT_COUNT],
+        outstanding_output_count: 0,
         allocation: None,
     };
     #[cfg(feature = "observation-tests")]

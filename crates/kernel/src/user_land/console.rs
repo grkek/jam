@@ -81,7 +81,7 @@ pub fn start(_conduit: Option<PowerStateCoordinationInterfaceConduit>) -> Result
     )
     .map_err(|_| "Terminal creation failed")?;
 
-    spawn_user_actor_with_argument(
+    let _ = spawn_user_actor_with_argument(
         FILESYSTEM_PROGRAM,
         Name::from_static(FILESYSTEM_NAME),
         configuration(),
@@ -236,7 +236,7 @@ impl Driver {
     /// Sleeps when idle; spins briefly when a send is waiting for pool space.
     fn idle(&self) {
         if self.pending.is_none() {
-            processor::wait_for_event();
+            kernel_inbox::wait_for_request_or_interrupt();
         } else {
             core::hint::spin_loop();
         }
@@ -262,12 +262,17 @@ extern "C" fn poll() -> ! {
 
     loop {
         driver.deliver_pending();
+
         if driver.pending.is_none() {
             driver.serve_request();
         }
+
         if driver.pending.is_none() {
             driver.collect_input();
         }
+
+        // Try the response immediately; admitted output is never replayed.
+        driver.deliver_pending();
         driver.idle();
     }
 }

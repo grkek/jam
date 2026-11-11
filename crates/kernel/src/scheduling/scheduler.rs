@@ -503,6 +503,10 @@ pub fn wake_inbox_actor(
         halt_machine();
     }
     selected_core.publish_queue_length(queue.length());
+    drop(queue);
+    crate::architecture::aarch64::interrupt_controller::request_reschedule(
+        selected_core.core_index(),
+    );
 }
 
 /// Dispatches after an inbox wait relinquished this core under the actor lock.
@@ -511,4 +515,36 @@ pub fn wake_inbox_actor(
 #[must_use]
 pub fn pick_next_after_wait(core: &CoreLocal) -> usize {
     dispatch_next(core, false)
+}
+
+/// Dispatches published local work without rearming the timer or counting a tick.
+#[must_use]
+pub fn on_reschedule_interrupt(interrupted_frame_address: usize) -> usize {
+    let Some(core_local) = current_core_local() else {
+        return interrupted_frame_address;
+    };
+    // Polling-driver notifications need only return from WFI when no work waits.
+    if core_local.queue().lock().is_empty() {
+        return interrupted_frame_address;
+    }
+    schedule(core_local, interrupted_frame_address, false)
+}
+
+/// Notifies a running kernel actor participating in the polling sleep handshake.
+/// The caller holds its actor lock, so its current core cannot change here.
+pub fn notify_polling_actor(actor: &crate::actors::control_block::ControlBlock) {
+    if actor.state != State::Running {
+        return;
+    }
+    let Some(core_local) = actor
+        .last_core_index
+        .and_then(|index| core_locals().get(index))
+    else {
+        return;
+    };
+    if core_local.is_polling_inbox() {
+        crate::architecture::aarch64::interrupt_controller::request_reschedule(
+            core_local.core_index(),
+        );
+    }
 }

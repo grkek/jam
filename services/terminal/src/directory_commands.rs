@@ -3,7 +3,8 @@
 //! The console driver supplies the boot-selected service identity. Requests and
 //! replies use exact sender, tag, and correlation matching. Listings pull one
 //! child per request and render immediately instead of buffering a whole tree.
-//! This first slice accepts absolute paths only and rejects unsupported options.
+//! Paths resolve against terminal-local working state; listings support hidden
+//! entries and type display without changing the filesystem wire protocol.
 
 use super::{Terminal, fail};
 use foundation::{
@@ -76,76 +77,226 @@ impl Terminal {
         self.print(format_args!("{message}\n"));
     }
 
-    /// Executes either spelling with the same argument validation and transport.
-    #[inline(never)]
-    pub(super) fn directory_command(&mut self, create: bool, arguments: &[&[u8]]) {
-        let path = match arguments {
-            [] if !create => b"/".as_slice(),
+    /// Checks existence through a bounded listing request without printing a child.
+    fn directory_exists(&mut self, address: LocalAddress, path: &[u8]) -> bool {
+        let mut request = [0; filesystem::MAXIMUM_REQUEST_BYTE_COUNT];
+        let mut record = [0; RECEIVED_HEADER_BYTE_COUNT + filesystem::MAXIMUM_RESPONSE_BYTE_COUNT];
+        let length =
+            filesystem::encode_list_request(0, path, &mut request).unwrap_or_else(|| fail());
+        let bytes = self.directory_request(
+            address,
+            filesystem::LIST_DIRECTORY_TAG,
+            request.get(..length).unwrap_or_else(|| fail()),
+            &mut record,
+        );
+        let Some(response) = filesystem::decode_response(bytes) else {
+            self.write(b"Invalid filesystem response.\n");
+            return false;
+        };
+        self.report_status(response.status);
+        response.status == Status::Accepted
+    }
+
+    /// Resolves components in order, checking each intermediate directory.
+    /// A missing component followed by `..` is an error, not silently erased.
+    fn resolve_directory_path(
+        &mut self,
+        address: LocalAddress,
+        input: &[u8],
+    ) -> Option<super::directory_path::DirectoryPath> {
+        if input.is_empty() || input.len() > filesystem::MAXIMUM_PATH_BYTE_COUNT {
+            self.write(b"Path is empty or exceeds 96 bytes.\n");
+            return None;
+        }
+        let mut path = if input.starts_with(b"/") {
+            super::directory_path::DirectoryPath::root()
+        } else {
+            self.working_directory
+        };
+        let mut components = input.split(|byte| *byte == b'/').peekable();
+        while let Some(component) = components.next() {
+            match component {
+                b"" | b"." => {}
+                b".." => path.parent(),
+                _ => {
+                    if path.append(component).is_none() {
+                        self.write(b"Invalid component or resolved path exceeds 96 bytes.\n");
+                        return None;
+                    }
+                    if components.peek().is_some()
+                        && !self.directory_exists(address, path.as_bytes())
+                    {
+                        return None;
+                    }
+                }
+            }
+        }
+        Some(path)
+    }
+
+    /// Changes session state only after the service confirms the destination exists.
+    pub(super) fn change_directory(&mut self, arguments: &[&[u8]]) {
+        let input = match arguments {
+            [] => b"/".as_slice(),
             [path] => *path,
             _ => {
-                self.usage(if create {
-                    "create-directory <absolute-path>"
-                } else {
-                    "list-directory [absolute-path]"
-                });
+                self.usage("change-directory [path]");
                 return;
             }
         };
-        if !path.starts_with(b"/") || path.len() > filesystem::MAXIMUM_PATH_BYTE_COUNT {
-            self.print(format_args!(
-                "Use an absolute path of at most {} bytes.\n",
-                filesystem::MAXIMUM_PATH_BYTE_COUNT
-            ));
-            return;
-        }
-        let Some(filesystem_address) = self.bind_filesystem() else {
-            self.print(format_args!("Filesystem is not available.\n"));
+        let Some(address) = self.bind_filesystem() else {
+            self.write(b"Filesystem is not available.\n");
             return;
         };
+        let Some(path) = self.resolve_directory_path(address, input) else {
+            return;
+        };
+        if self.directory_exists(address, path.as_bytes()) {
+            self.working_directory = path;
+        }
+    }
 
+    /// Prints this terminal session's canonical working directory.
+    pub(super) fn show_working_directory(&mut self, arguments: &[&[u8]]) {
+        if !self.rejects_arguments("working-directory", arguments) {
+            let path = self.working_directory;
+            self.write(path.as_bytes());
+            self.write(b"\n");
+        }
+    }
+
+    /// Executes creation or a bounded listing using the shared path resolver.
+    #[inline(never)]
+    pub(super) fn directory_command(&mut self, make: bool, arguments: &[&[u8]]) {
+        let Some(options) = DirectoryOptions::parse(make, arguments) else {
+            self.usage(if make {
+                "make-directory <path>"
+            } else {
+                "list-directory [-lad] [--long] [--all] [--directories] [--] [path]"
+            });
+            return;
+        };
+        let Some(address) = self.bind_filesystem() else {
+            self.write(b"Filesystem is not available.\n");
+            return;
+        };
+        let Some(path) = self.resolve_directory_path(address, options.path) else {
+            return;
+        };
         let mut request = [0; filesystem::MAXIMUM_REQUEST_BYTE_COUNT];
         let mut record = [0; RECEIVED_HEADER_BYTE_COUNT + filesystem::MAXIMUM_RESPONSE_BYTE_COUNT];
         let mut cursor = 0_u16;
         let mut listed_any = false;
-
         loop {
-            let (tag, length) = if create {
-                let length =
-                    filesystem::encode_create_request(path, &mut request).unwrap_or_else(|| fail());
-                (filesystem::CREATE_DIRECTORY_TAG, length)
+            let (tag, length) = if make {
+                (
+                    filesystem::CREATE_DIRECTORY_TAG,
+                    filesystem::encode_make_request(path.as_bytes(), &mut request),
+                )
             } else {
-                let length = filesystem::encode_list_request(cursor, path, &mut request)
-                    .unwrap_or_else(|| fail());
-                (filesystem::LIST_DIRECTORY_TAG, length)
+                (
+                    filesystem::LIST_DIRECTORY_TAG,
+                    filesystem::encode_list_request(cursor, path.as_bytes(), &mut request),
+                )
             };
-            let payload = request.get(..length).unwrap_or_else(|| fail());
-            let bytes = self.directory_request(filesystem_address, tag, payload, &mut record);
-
+            let length = length.unwrap_or_else(|| fail());
+            let bytes = self.directory_request(
+                address,
+                tag,
+                request.get(..length).unwrap_or_else(|| fail()),
+                &mut record,
+            );
             let Some(response) = filesystem::decode_response(bytes) else {
-                self.print(format_args!("Invalid filesystem response.\n"));
+                self.write(b"Invalid filesystem response.\n");
                 return;
             };
             if response.status != Status::Accepted {
                 self.report_status(response.status);
                 return;
             }
-            if create {
+            if make {
                 self.write(b"Directory created (memory only).\n");
                 return;
             }
             if response.next_cursor == 0 {
                 if !listed_any {
-                    self.write(b"(empty)\n");
+                    self.write(b"(no matching entries)\n");
                 }
                 return;
             }
             if response.next_cursor <= cursor {
                 fail();
             }
+            cursor = response.next_cursor;
+            if !options.all && response.name.starts_with(b".") {
+                continue;
+            }
+            if options.long {
+                if !listed_any {
+                    self.write(b"TYPE  NAME\n");
+                }
+                self.write(b"dir   ");
+            }
             self.write(response.name);
             self.write(b"/\n");
-            cursor = response.next_cursor;
             listed_any = true;
         }
+    }
+}
+
+/// Validated options; the current service stores directories only.
+struct DirectoryOptions<'a> {
+    /// Input path before resolution against the terminal's working directory.
+    path: &'a [u8],
+    /// Include names beginning with a dot.
+    all: bool,
+    /// Display the supported entry type alongside its name.
+    long: bool,
+}
+
+impl<'a> DirectoryOptions<'a> {
+    /// Accepts clustered short flags, complete long names, and `--`.
+    fn parse(make: bool, arguments: &[&'a [u8]]) -> Option<Self> {
+        let mut path = None;
+        let mut all = false;
+        let mut long = false;
+        let mut options = !make;
+        for &argument in arguments {
+            if options && argument == b"--" {
+                options = false;
+                continue;
+            }
+            if options && argument.starts_with(b"--") {
+                match argument {
+                    b"--all" => all = true,
+                    b"--long" => long = true,
+                    b"--directories" => {}
+                    _ => return None,
+                }
+            } else if options && argument.starts_with(b"-") {
+                let flags = argument.get(1..)?;
+                if flags.is_empty() {
+                    return None;
+                }
+                for flag in flags {
+                    match flag {
+                        b'a' => all = true,
+                        b'l' => long = true,
+                        b'd' => {}
+                        _ => return None,
+                    }
+                }
+            } else if path.replace(argument).is_some() {
+                return None;
+            }
+        }
+        if make && path.is_none() {
+            return None;
+        }
+        Some(Self {
+            path: path.unwrap_or(b"."),
+            all,
+            long,
+        })
     }
 }

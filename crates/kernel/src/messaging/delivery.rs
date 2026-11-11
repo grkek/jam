@@ -14,7 +14,7 @@ use crate::{
     architecture::aarch64::{
         memory_management_unit::actor_slot_ceiling, power_interface::halt_machine,
     },
-    scheduling::scheduler::wake_inbox_actor,
+    scheduling::scheduler::{notify_polling_actor, wake_inbox_actor},
 };
 use foundation::{address::LocalAddress, system_call_status::SystemCallStatus};
 
@@ -72,7 +72,10 @@ pub fn tell_actor(
         };
 
         match inbox.send(envelope) {
-            Ok(SendEffect::Enqueued) => Ok(()),
+            Ok(SendEffect::Enqueued) => {
+                notify_polling_actor(actor);
+                Ok(())
+            }
             Ok(SendEffect::Wake(token)) => {
                 wake_inbox_actor(actor, token);
                 Ok(())

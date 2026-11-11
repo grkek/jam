@@ -147,7 +147,7 @@ fn take_store() -> &'static mut Store {
 fn serve(store: &mut Store, tag: Tag, payload: &[u8], reply: &mut [u8]) -> Option<usize> {
     match tag {
         filesystem::CREATE_DIRECTORY_TAG => {
-            let status = match filesystem::decode_create_request(payload) {
+            let status = match filesystem::decode_make_request(payload) {
                 Some(path) => store.create(path),
                 None => Status::InvalidRequest,
             };

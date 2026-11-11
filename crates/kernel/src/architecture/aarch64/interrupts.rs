@@ -1,14 +1,15 @@
 //! Dispatches interrupts taken by the exception vectors.
 
 use super::interrupt_controller::{
-    TIMER_INTERRUPT_IDENTIFIER, acknowledge_interrupt, end_of_interrupt,
+    RESCHEDULE_INTERRUPT_IDENTIFIER, TIMER_INTERRUPT_IDENTIFIER, acknowledge_interrupt,
+    end_of_interrupt, interrupt_identifier as identifier_from_token,
 };
 use crate::{
     architecture::aarch64::{early_console::EarlyConsole, exceptions::TrapFrame},
     error,
     scheduling::{
         core_local::{NO_ACTOR, current_core_local},
-        scheduler::on_timer_tick,
+        scheduler::{on_reschedule_interrupt, on_timer_tick},
     },
 };
 
@@ -20,14 +21,17 @@ use crate::{
 pub fn handle_interrupt(interrupted_frame_address: usize) -> usize {
     let interrupt_identifier = acknowledge_interrupt();
 
-    let frame_to_resume = if let Some(identifier) = interrupt_identifier {
+    let frame_to_resume = if let Some(token) = interrupt_identifier {
+        let identifier = identifier_from_token(token);
         let next_frame = if identifier == TIMER_INTERRUPT_IDENTIFIER {
             on_timer_tick(interrupted_frame_address)
+        } else if identifier == RESCHEDULE_INTERRUPT_IDENTIFIER {
+            on_reschedule_interrupt(interrupted_frame_address)
         } else {
             interrupted_frame_address
         };
 
-        end_of_interrupt(identifier);
+        end_of_interrupt(token);
         next_frame
     } else {
         interrupted_frame_address

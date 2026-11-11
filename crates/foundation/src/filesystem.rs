@@ -1,13 +1,13 @@
 //! Bounded directory messages for the first in-memory filesystem service.
 //!
-//! A create request carries the bare absolute ASCII path. A list request starts
+//! A make request carries the bare absolute ASCII path. A list request starts
 //! with a little-endian u16 cursor, followed by the path. Each reply contains a
 //! status byte, the next little-endian cursor, and at most one child name.
 //! A listing ends with `next_cursor == 0` and an empty name; a returned child
 //! always carries a cursor of at least one. Correlation and sender identity come
 //! from message metadata, never from the payload.
 //!
-//! Version one only creates and lists directories. There is no disk persistence,
+//! Version one only makes and lists directories. There is no disk persistence,
 //! deletion, file content, executable loading, or public service discovery yet.
 
 use crate::tag::Tag;
@@ -74,9 +74,9 @@ pub struct Response<'a> {
     pub name: &'a [u8],
 }
 
-/// Builds a create request (the bare path) into `buffer`; returns its length.
+/// Builds a make request (the bare path) into `buffer`; returns its length.
 #[must_use]
-pub fn encode_create_request(path: &[u8], buffer: &mut [u8]) -> Option<usize> {
+pub fn encode_make_request(path: &[u8], buffer: &mut [u8]) -> Option<usize> {
     if path.len() > MAXIMUM_PATH_BYTE_COUNT {
         return None;
     }
@@ -84,9 +84,9 @@ pub fn encode_create_request(path: &[u8], buffer: &mut [u8]) -> Option<usize> {
     Some(path.len())
 }
 
-/// A create request's path, or `None` if it is too long.
+/// A make request's path, or `None` if it is too long.
 #[must_use]
-pub fn decode_create_request(payload: &[u8]) -> Option<&[u8]> {
+pub fn decode_make_request(payload: &[u8]) -> Option<&[u8]> {
     (payload.len() <= MAXIMUM_PATH_BYTE_COUNT).then_some(payload)
 }
 

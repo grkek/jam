@@ -67,3 +67,35 @@ pub fn receive(output: &mut [u8]) -> Option<(MessageMetadata<LocalAddress>, usiz
     super::delivery::release_message(released);
     copied.map(|length| (metadata, length))
 }
+
+/// Sleeps only after advertising the polling wait and rechecking the inbox.
+///
+/// Local IRQs stay masked from publication through WFI. A producer either sees
+/// the flag and sends an SGI, or publishes before our locked inbox check sees it.
+/// A pending IRQ wakes WFI even while masked; restoring DAIF then handles it.
+/// The periodic timer also wakes this polling driver to inspect UART input.
+/// No spin lock is held while sleeping, and the actor cannot migrate in this span.
+pub fn wait_for_request_or_interrupt() {
+    use crate::architecture::aarch64::processor::{mask_interrupts, restore_interrupts};
+    let saved_interrupt_state = mask_interrupts();
+    let Some(core_local) = current_core_local() else {
+        halt_machine();
+    };
+    core_local.set_polling_inbox(true);
+    let has_messages = with_control_block(core_local.current_slot_index(), |actor| {
+        actor
+            .inbox
+            .as_ref()
+            .is_some_and(|inbox| inbox.message_count() != 0)
+    })
+    .unwrap_or(true);
+    if !has_messages {
+        // SAFETY: The polling handshake is visible, IRQs are masked, and all
+        // locks have been released. The timer remains enabled as an input poll.
+        unsafe {
+            core::arch::asm!("dsb sy", "wfi", options(nostack, preserves_flags));
+        }
+    }
+    core_local.set_polling_inbox(false);
+    restore_interrupts(saved_interrupt_state);
+}

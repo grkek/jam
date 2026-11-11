@@ -18,8 +18,12 @@ pub const COMMAND_NAMES: &[&str] = &[
     "clear",
     "list-directory",
     "ld",
-    "create-directory",
+    "make-directory",
+    "md",
+    "change-directory",
     "cd",
+    "working-directory",
+    "wd",
 ];
 
 /// Whether a complete first word names an implemented command.

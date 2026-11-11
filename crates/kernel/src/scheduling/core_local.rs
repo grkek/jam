@@ -41,6 +41,8 @@ pub struct SchedulerStatistics {
 pub struct CoreLocal {
     core_index: usize,
     is_online: AtomicBool,
+    /// Current kernel actor is checking its inbox before a masked-IRQ sleep.
+    polling_inbox: AtomicBool,
     queue: SpinLock<Queue>,
     published_queue_length: AtomicUsize,
     current_slot_index: AtomicUsize,
@@ -58,6 +60,7 @@ impl CoreLocal {
         Self {
             core_index,
             is_online: AtomicBool::new(false),
+            polling_inbox: AtomicBool::new(false),
             queue: SpinLock::new(Queue::new()),
             published_queue_length: AtomicUsize::new(0),
             current_slot_index: AtomicUsize::new(NO_ACTOR),
@@ -81,6 +84,17 @@ impl CoreLocal {
     #[must_use]
     pub fn is_online(&self) -> bool {
         self.is_online.load(Ordering::Acquire)
+    }
+
+    /// Publishes the polling sleep handshake while local IRQs remain masked.
+    pub fn set_polling_inbox(&self, waiting: bool) {
+        self.polling_inbox.store(waiting, Ordering::Release);
+    }
+
+    /// Whether the current kernel actor needs an interrupt after inbox admission.
+    #[must_use]
+    pub fn is_polling_inbox(&self) -> bool {
+        self.polling_inbox.load(Ordering::Acquire)
     }
 
     /// Actors waiting to run on this core.
