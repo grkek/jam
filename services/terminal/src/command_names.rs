@@ -26,7 +26,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "wd",
 ];
 
-/// Whether a complete first word names an implemented command.
+/// Whether a complete first word is a known command.
 #[must_use]
 pub fn is_known_command(name: &[u8]) -> bool {
     COMMAND_NAMES
@@ -34,18 +34,16 @@ pub fn is_known_command(name: &[u8]) -> bool {
         .any(|command| command.as_bytes() == name)
 }
 
-/// Byte range of the first word, excluding leading whitespace and all arguments.
+/// Byte range of the first command word, excluding whitespace and arguments.
 #[must_use]
 pub fn command_range(line: &[u8]) -> core::ops::Range<usize> {
     let start = line
         .iter()
         .position(|byte| !byte.is_ascii_whitespace())
         .unwrap_or(line.len());
-    let end = line
+    let end = line[start..]
         .iter()
-        .enumerate()
-        .skip(start)
-        .find(|(_, byte)| byte.is_ascii_whitespace())
-        .map_or(line.len(), |(index, _)| index);
+        .position(u8::is_ascii_whitespace)
+        .map_or(line.len(), |offset| start + offset);
     start..end
 }

@@ -7,7 +7,7 @@
 
 use super::{GREEN, PROMPT, RED, RESET, Terminal, Text};
 use core::fmt::Write;
-use terminal::{LineEditor, commands};
+use terminal::{LineEditor, command_names};
 
 /// Printable input bytes visible beside the two-column prompt.
 const INPUT_VIEWPORT_BYTE_COUNT: usize = 64;
@@ -15,7 +15,7 @@ const INPUT_VIEWPORT_BYTE_COUNT: usize = 64;
 impl Terminal {
     /// Repaints the visible suffix with the cursor left at the end of the input.
     pub(super) fn redraw_line(&mut self, line: &[u8]) {
-        let range = commands::command_range(line);
+        let range = command_names::command_range(line);
         let name = line.get(range.clone()).unwrap_or(&[]);
         let visible_start = line.len().saturating_sub(INPUT_VIEWPORT_BYTE_COUNT);
         let command_start = range.start.max(visible_start);
@@ -29,7 +29,7 @@ impl Terminal {
         append(PROMPT);
         append(line.get(visible_start..command_start).unwrap_or(&[]));
         if !name.is_empty() && command_start < command_end {
-            append(if commands::is_known_command(name) {
+            append(if command_names::is_known_command(name) {
                 GREEN.as_bytes()
             } else {
                 RED.as_bytes()
@@ -47,13 +47,13 @@ impl Terminal {
             self.redraw_line(editor.line());
             return;
         }
-        let range = commands::command_range(editor.line());
+        let range = command_names::command_range(editor.line());
         if range.end != editor.line().len() {
             return;
         }
         let prefix = editor.line().get(range).unwrap_or(&[]);
         let mut displayed = false;
-        for name in commands::COMMAND_NAMES {
+        for name in command_names::COMMAND_NAMES {
             if name.as_bytes().starts_with(prefix) {
                 if !displayed {
                     self.write(b"\n");

@@ -18,8 +18,8 @@ mod line_display;
 use core::cmp::Reverse;
 use core::fmt::{self, Write};
 use foundation::{
-    address::LocalAddress, console, observation::State, system_call_status::SystemCallStatus,
-    tag::Tag,
+    address::LocalAddress, console, file_system_handle::FileSystemHandle, observation::State,
+    system_call_status::SystemCallStatus, tag::Tag,
 };
 use runtime::{
     allocator::{self, Allocation},
@@ -58,7 +58,7 @@ const PRINT_CHUNK: usize = console::MAXIMUM_OUTPUT_BYTE_COUNT;
 /// Maximum admitted console writes awaiting acknowledgements.
 const MAXIMUM_OUTSTANDING_OUTPUT_COUNT: usize = 4;
 /// Most words a command line may hold (the command plus its arguments).
-const MAXIMUM_WORDS: usize = 5;
+const MAXIMUM_WORDS: usize = 8;
 
 /// The colored prompt shown before each input line.
 const PROMPT: &[u8] = b"\x1b[1;32m]\x1b[0m ";
@@ -495,6 +495,8 @@ struct Terminal {
     driver: LocalAddress,
     /// Boot-bound directory service, resolved lazily through the console driver.
     filesystem_address: Option<LocalAddress>,
+    /// Root filesystem handle held for the lifetime of this terminal session.
+    filesystem_root_handle: Option<FileSystemHandle>,
     /// Canonical working directory owned by this terminal session.
     working_directory: directory_path::DirectoryPath,
     correlation: u64,
@@ -1197,7 +1199,10 @@ impl Terminal {
                 "cd: change directory (default /)",
             ),
             ("working-directory", "wd: show the current directory"),
-            ("", "ld: -l/--long, -a/--all, -d/--directories"),
+            (
+                "",
+                "ld: -l/--long, -a/--all, -d/--directories (show target)",
+            ),
             ("", "Relative paths, . and .. supported; memory only"),
             (
                 "actors [state] [sort]",
@@ -1353,6 +1358,7 @@ pub extern "C" fn _start(driver_identity: u64) -> ! {
     let mut terminal = Terminal {
         driver,
         filesystem_address: None,
+        filesystem_root_handle: None,
         working_directory: directory_path::DirectoryPath::root(),
         correlation: 0,
         outstanding_output: [0; MAXIMUM_OUTSTANDING_OUTPUT_COUNT],

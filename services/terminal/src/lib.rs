@@ -5,7 +5,7 @@
 
 #![no_std]
 
-pub mod commands;
+pub mod command_names;
 
 /// Maximum bytes accepted in a command line.
 pub const MAXIMUM_COMMAND_BYTE_COUNT: usize = 128;
@@ -115,12 +115,12 @@ impl LineEditor {
         if self.discarded {
             return false;
         }
-        let range = commands::command_range(self.line());
+        let range = command_names::command_range(self.line());
         if range.end != self.length {
             return false;
         }
         let prefix = self.line().get(range.clone()).unwrap_or(&[]);
-        let mut matches = commands::COMMAND_NAMES
+        let mut matches = command_names::COMMAND_NAMES
             .iter()
             .filter(|name| name.as_bytes().starts_with(prefix));
         let Some(first) = matches.next() else {
@@ -137,7 +137,7 @@ impl LineEditor {
                 .take_while(|(left, right)| left == right)
                 .count();
         }
-        let exact = commands::is_known_command(prefix);
+        let exact = command_names::is_known_command(prefix);
         let completed_length = if exact { prefix.len() } else { common_length };
         let add_space = exact || unique;
         let next_length = range.start + completed_length + usize::from(add_space);

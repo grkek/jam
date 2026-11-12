@@ -34,9 +34,9 @@ static FILESYSTEM_PROGRAM: &[u8] = include_bytes!(env!("FILESYSTEM_ELF_PATH"));
 /// Terminal ELF built independently from Genesis by xtask.
 static TERMINAL_PROGRAM: &[u8] = include_bytes!(env!("TERMINAL_ELF_PATH"));
 
-const CONSOLE_NAME: &str = "Local.Console";
-const FILESYSTEM_NAME: &str = "Local.Filesystem";
-const TERMINAL_NAME: &str = "Local.Terminal";
+const CONSOLE_NAME: &str = "Driver.Local.Console";
+const FILESYSTEM_NAME: &str = "Driver.Local.Filesystem";
+const TERMINAL_NAME: &str = "Actor.Local.Terminal";
 
 /// Parks the current actor forever.
 fn halt() -> ! {

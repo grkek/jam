@@ -15,7 +15,10 @@ pub mod configuration;
 pub mod console;
 pub mod device_tree;
 pub mod farewell;
-pub mod filesystem;
+pub mod file_system;
+pub mod file_system_error;
+pub mod file_system_handle;
+pub mod file_system_protocol;
 pub mod frame_bitmap;
 /// Bounded physical memory, reservation, and CPU discovery from firmware.
 pub mod hardware_description;
@@ -36,5 +39,3 @@ mod wire_bytes;
 pub mod messaging;
 
 pub mod observation;
-
-const _: () = assert!(console::PROTOCOL != filesystem::PROTOCOL);
