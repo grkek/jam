@@ -22,7 +22,6 @@ use crate::{
     },
     architecture::aarch64::{early_console::EarlyConsole, processor, time::read_counter_value},
     information,
-    memory::user_program::EL0_GENESIS_PROGRAM,
     messaging::delivery::tell_actor,
     system_calls::actor_calls::pack_local_address,
     warning,
@@ -68,6 +67,9 @@ const IDLE_HAMMER_MESSAGES: usize = 4096;
 
 const BOOTSTRAP_ATTEMPTS: u32 = 100_000;
 const FALLBACK_COUNTER_FREQUENCY: u64 = 62_500_000;
+
+/// Genesis ELF built independently from other services.
+static GENESIS_PROGRAM: &[u8] = include_bytes!(env!("GENESIS_ELF_PATH"));
 
 /// Runs the whole plan. Returns once every phase has been launched and reported.
 pub fn run() {
@@ -141,7 +143,7 @@ impl Plan {
     /// Spawn failures are expected under stress, so they are counted, not fatal.
     fn spawn(&mut self) -> Option<LocalAddress> {
         match spawn_light_user_actor(
-            EL0_GENESIS_PROGRAM,
+            GENESIS_PROGRAM,
             Name::UNNAMED,
             default_configuration(),
             None,

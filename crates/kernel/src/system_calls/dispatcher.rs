@@ -7,7 +7,7 @@ use foundation::{
 
 use crate::architecture::aarch64::exceptions::TrapFrame;
 
-use super::actor_calls::{current_address, finish_actor};
+use super::actor_calls::{current_address, find_actor_by_name, finish_actor};
 
 /// Handles an SVC from EL0 and writes its result into the saved frame.
 ///
@@ -81,6 +81,19 @@ pub fn dispatch(trap_frame: *mut TrapFrame) -> *mut TrapFrame {
         Ok(SystemCall::DirectMemoryAccessAllocate) => unsupported_call(trap_frame),
         Ok(SystemCall::DirectMemoryAccessRelease) => unsupported_call(trap_frame),
         Ok(SystemCall::DirectMemoryAccessSynchronize) => unsupported_call(trap_frame),
+
+        Ok(SystemCall::FindActorByName) => {
+            let name_pointer = frame.general_registers[0];
+            let name_byte_count = frame.general_registers[1];
+
+            let (status, value) = find_actor_by_name(name_pointer, name_byte_count);
+
+            frame.general_registers[usize::from(STATUS_REGISTER)] = status.number();
+            frame.general_registers[usize::from(VALUE_REGISTER)] = value;
+
+            trap_frame
+        }
+
         Err(_) => unsupported_call(trap_frame),
     }
 }

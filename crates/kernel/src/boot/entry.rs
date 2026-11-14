@@ -364,7 +364,7 @@ fn initialise_stack_tracking() {
 
 /// With the stress plan compiled in, run it and power off so CI can see the exit.
 #[cfg(feature = "stress")]
-fn after_bootstrap(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> ! {
+fn initialise_user_land(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> ! {
     stress::run();
     // QEMU `virt` powers off here. Boards without a power interface park the core.
     power_off_or_park(conduit)
@@ -372,25 +372,15 @@ fn after_bootstrap(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> !
 
 /// Starts Genesis, the terminal, and the temporary polling console driver.
 #[cfg(not(feature = "stress"))]
-fn after_bootstrap(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> ! {
-    use crate::{
-        actors::{divider::default_configuration, name::Name, table::spawn_light_user_actor},
-        memory::user_program::EL0_GENESIS_PROGRAM,
-    };
-
-    let _ = {
-        let name = Name::from_static("Genesis");
-        let configuration = default_configuration();
-
-        spawn_light_user_actor(EL0_GENESIS_PROGRAM, name, configuration, None)
-    }
-    .map_err(|_| "Genesis creation failed");
+fn initialise_user_land(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> ! {
+    use crate::architecture::aarch64::processor::wait_for_event;
 
     if let Err(reason) = crate::user_land::current::start(conduit) {
         fatal!(conduit, "Userland bootstrap failed: {reason}");
     }
+
     loop {
-        processor::wait_for_event();
+        wait_for_event();
     }
 }
 
@@ -493,5 +483,5 @@ pub extern "C" fn kernel_main(device_tree_address: usize) -> ! {
         "Kernel bootstrap sequence complete. Handing control over to the scheduler..."
     );
 
-    after_bootstrap(conduit)
+    initialise_user_land(conduit)
 }

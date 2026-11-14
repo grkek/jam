@@ -107,19 +107,16 @@ pub fn stack_top_address(slot_index: usize) -> Option<usize> {
     Some(STACK_DIRECTORY.get(slot_index)? + KERNEL_STACK_BYTE_COUNT)
 }
 
-/// Writes an EL0 frame with the user PC, stack, and boot-authenticated x0 argument.
+/// Writes an EL0 frame with the user PC and stack.
 #[must_use]
 pub fn prepare_first_user_frame(
     slot_index: usize,
     entry_point_address: usize,
     user_stack_top: usize,
-    initial_argument: u64,
 ) -> Option<usize> {
     let frame_address = stack_top_address(slot_index)? - size_of::<TrapFrame>();
-    let mut general_registers = [0; 31];
-    if let Some(register) = general_registers.first_mut() {
-        *register = initial_argument;
-    }
+    let general_registers = [0; 31];
+
     let frame = TrapFrame {
         general_registers,
         exception_link_register: entry_point_address as u64,

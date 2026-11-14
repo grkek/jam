@@ -43,9 +43,6 @@ use crate::{
     wire_bytes::read_array,
 };
 
-// These numbers are placeholders. Pick values that do not collide with the tags of your
-// other services. `Tag::new` is assumed to be a `const fn`; match your `tag.rs`.
-
 /// Protocol definition of the file system.
 pub const PROTOCOL: u16 = 0x0002;
 

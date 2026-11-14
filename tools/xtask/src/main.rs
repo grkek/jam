@@ -199,7 +199,7 @@ fn cargo_build(root: &Path, package: &str, options: &Options, features: &[&str])
     if package == "kernel" {
         command.env("GENESIS_ELF_PATH", genesis_program_path(root, options));
         command.env(
-            "FILESYSTEM_ELF_PATH",
+            "FILE_SYSTEM_ELF_PATH",
             genesis_program_path(root, options).with_file_name("filesystem"),
         );
         command.env(
@@ -559,7 +559,7 @@ fn check(root: &Path, options: &Options) -> Result<(), String> {
                 .arg(root.join("target"))
                 .env("GENESIS_ELF_PATH", genesis_program_path(root, options))
                 .env(
-                    "FILESYSTEM_ELF_PATH",
+                    "FILE_SYSTEM_ELF_PATH",
                     genesis_program_path(root, options).with_file_name("filesystem"),
                 )
                 .env(

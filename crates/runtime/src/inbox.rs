@@ -113,6 +113,26 @@ pub fn tell_actor(
     result(status, value).map(|_| ())
 }
 
+/// Finds a live local actor by its registered name.
+///
+/// # Errors
+///
+/// Returns `ActorNotFound` when no matching actor exists,
+/// `InvalidArgument` for malformed names, or `InvalidUserMemory`
+/// when the kernel cannot read the supplied name buffer.
+pub fn find_actor_by_name(name: &str) -> Result<LocalAddress, MessagingError> {
+    // SAFETY: The name is borrowed for the duration of the
+    // synchronous call. The kernel validates and copies the bytes.
+    let (status, value) = unsafe {
+        invoke(
+            SystemCall::FindActorByName.number(),
+            [name.as_ptr() as u64, name.len() as u64, 0, 0, 0, 0],
+        )
+    };
+
+    Ok(LocalAddress::from_packed(result(status, value)?))
+}
+
 /// Reads the caller's address from the scheduler-authenticated kernel context.
 ///
 /// # Errors

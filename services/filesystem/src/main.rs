@@ -14,6 +14,7 @@ use foundation::{
     file_system::{AccessRights, FileSystem},
     file_system_protocol::{self as protocol, Status},
     messaging::MAXIMUM_RECORD_BYTE_COUNT,
+    name::Name,
     system_call_status::SystemCallStatus,
     tag::Tag,
 };
@@ -140,8 +141,8 @@ fn send(client: LocalAddress, correlation: u64, reply: &[u8]) {
 
 /// Serves the boot-selected client.
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(client_identity: u64) -> ! {
-    let client = LocalAddress::from_packed(client_identity);
+pub extern "C" fn _start() -> ! {
+    let client = inbox::find_actor_by_name(Name::TERMINAL.as_str()).unwrap_or_else(|_| fail());
     let owner = Address::Local(client);
     let file_system = take_file_system();
     // Sized for the largest record, so oversized requests are consumed, not stranded.

@@ -1,10 +1,20 @@
 //! Actor-related system calls.
 
-use foundation::{address::LocalAddress, cause::Cause, system_call_status::SystemCallStatus};
+use foundation::{
+    address::LocalAddress,
+    cause::Cause,
+    name::{MAXIMUM_NAME_BYTE_COUNT, Name},
+    system_call_status::SystemCallStatus,
+};
 
 use crate::{
-    actors::{lifecycle, table::with_control_block},
+    actors::{
+        control_block::State,
+        lifecycle,
+        table::{find_actor_by_name as find_local_actor_by_name, with_control_block},
+    },
     architecture::aarch64::exceptions::TrapFrame,
+    memory::user_copy::copy_from_actor,
     scheduling::core_local::{NO_ACTOR, current_core_local},
 };
 
@@ -52,6 +62,65 @@ pub fn current_address() -> (SystemCallStatus, u64) {
     let address = LocalAddress::new(slot_number, generation_counter);
 
     (SystemCallStatus::Accepted, pack_local_address(address))
+}
+
+/// `FindActorByName`: name pointer in `x0`, length in `x1`.
+///
+/// Returns the status in `x0` and packed `LocalAddress` in `x1`.
+/// Only live actors registered on this node are considered.
+#[must_use]
+pub fn find_actor_by_name(name_pointer: u64, name_byte_count: u64) -> (SystemCallStatus, u64) {
+    let result = (|| {
+        let byte_count =
+            usize::try_from(name_byte_count).map_err(|_| SystemCallStatus::InvalidArgument)?;
+
+        if byte_count == 0 || byte_count > MAXIMUM_NAME_BYTE_COUNT {
+            return Err(SystemCallStatus::InvalidArgument);
+        }
+
+        let pointer =
+            usize::try_from(name_pointer).map_err(|_| SystemCallStatus::InvalidUserMemory)?;
+
+        let core_local = current_core_local().ok_or(SystemCallStatus::InvalidArgument)?;
+
+        let slot_index = core_local.current_slot_index();
+
+        if slot_index == NO_ACTOR {
+            return Err(SystemCallStatus::InvalidArgument);
+        }
+
+        let mut name_bytes = [0u8; MAXIMUM_NAME_BYTE_COUNT];
+
+        // Copy the name while the caller's address space is pinned.
+        // Release the control-block lock before scanning other actors.
+        with_control_block(slot_index, |control_block| {
+            if control_block.state != State::Running {
+                return Err(SystemCallStatus::InvalidArgument);
+            }
+
+            let address_space = control_block
+                .address_space
+                .as_ref()
+                .ok_or(SystemCallStatus::InvalidUserMemory)?;
+
+            copy_from_actor(address_space, pointer, &mut name_bytes[..byte_count])
+        })
+        .ok_or(SystemCallStatus::InvalidArgument)??;
+
+        let name_text = core::str::from_utf8(&name_bytes[..byte_count])
+            .map_err(|_| SystemCallStatus::InvalidArgument)?;
+
+        let name = Name::new(name_text).map_err(|_| SystemCallStatus::InvalidArgument)?;
+
+        let address = find_local_actor_by_name(name).ok_or(SystemCallStatus::ActorNotFound)?;
+
+        Ok(pack_local_address(address))
+    })();
+
+    match result {
+        Ok(address) => (SystemCallStatus::Accepted, address),
+        Err(status) => (status, 0),
+    }
 }
 
 /// `FinishActor`: relinquishes the current actor and resumes the next or idle frame.

@@ -41,9 +41,9 @@ impl Terminal {
             return Some(address);
         }
 
-        let correlation = self.request(console::FILESYSTEM_ADDRESS_TAG, &[]);
+        let correlation = self.request(console::FILE_SYSTEM_ADDRESS_TAG, &[]);
         let mut record = [0; RECEIVED_HEADER_BYTE_COUNT + console::ADDRESS_BYTE_COUNT];
-        let payload = self.response(console::FILESYSTEM_BOUND_TAG, correlation, &mut record);
+        let payload = self.response(console::FILE_SYSTEM_BOUND_TAG, correlation, &mut record);
         let address = console::decode_address(payload)?;
         self.filesystem_address = Some(address);
         Some(address)

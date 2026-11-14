@@ -1,12 +1,12 @@
 //! Everything the kernel knows about one actor.
 
 use foundation::{
-    address::LocalAddress, cause::Cause, configuration::Configuration,
+    address::LocalAddress, cause::Cause, configuration::Configuration, name::Name,
     resource_budget::MAXIMUM_INBOX_MESSAGE_COUNT,
 };
 
 use crate::{
-    actors::{inbox::Inbox, message_pool::MessageHandle, name::Name},
+    actors::{inbox::Inbox, message_pool::MessageHandle},
     memory::address_space::AddressSpace,
 };
 

@@ -68,9 +68,6 @@ pub const EL0_COUNTER_PROGRAM: &[u8] = &[
     0xff, 0xff, 0xff, 0x17, // b back to the increment
 ];
 
-/// The embedded, statically linked Genesis service.
-pub const EL0_GENESIS_PROGRAM: &[u8] = include_bytes!(env!("GENESIS_ELF_PATH"));
-
 /// The fields of the ELF header this loader uses.
 struct ElfHeader {
     entry_point: u64,

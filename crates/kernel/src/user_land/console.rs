@@ -8,35 +8,35 @@
 //! Directory operations themselves travel directly between the two EL0 actors.
 //! This is bootstrap plumbing, not the future Steward supervision hierarchy.
 
+use foundation::{
+    actor::{Actor, Image},
+    address::LocalAddress,
+    configuration::{Configuration, Lineage, OverflowPolicy, Survival},
+    console,
+    device_tree::PowerStateCoordinationInterfaceConduit,
+    name::Name,
+    system_call_status::SystemCallStatus,
+    tag::Tag,
+};
+
 use crate::{
     actors::{
         divider,
         inbox::MessageMetadata,
-        name::Name,
-        table::{find_actor_by_name, spawn_kernel_actor, spawn_user_actor_with_argument},
+        table::{enqueue, find_actor_by_name},
     },
     architecture::aarch64::{early_console::EarlyConsole, processor},
     memory::address_translation::physical_to_virtual,
     messaging::{delivery::tell_actor, kernel_inbox},
     system_calls::actor_calls::current_address,
 };
-use foundation::{
-    address::LocalAddress,
-    configuration::{Configuration, Lineage, OverflowPolicy, Survival},
-    console,
-    device_tree::PowerStateCoordinationInterfaceConduit,
-    system_call_status::SystemCallStatus,
-    tag::Tag,
-};
 
 /// Independent EL0 directory service built by xtask.
-static FILESYSTEM_PROGRAM: &[u8] = include_bytes!(env!("FILESYSTEM_ELF_PATH"));
+static FILE_SYSTEM_PROGRAM: &[u8] = include_bytes!(env!("FILE_SYSTEM_ELF_PATH"));
+/// Genesis ELF built independently from other services.
+// static GENESIS_PROGRAM: &[u8] = include_bytes!(env!("GENESIS_ELF_PATH"));
 /// Terminal ELF built independently from Genesis by xtask.
 static TERMINAL_PROGRAM: &[u8] = include_bytes!(env!("TERMINAL_ELF_PATH"));
-
-const CONSOLE_NAME: &str = "Driver.Local.Console";
-const FILESYSTEM_NAME: &str = "Driver.Local.Filesystem";
-const TERMINAL_NAME: &str = "Actor.Local.Terminal";
 
 /// Parks the current actor forever.
 fn halt() -> ! {
@@ -47,48 +47,34 @@ fn halt() -> ! {
 
 /// Starts normal userland and returns an error if a required actor cannot start.
 ///
-/// Spawn order follows the address dependencies: the terminal is handed the driver's
-/// address and the filesystem is handed the terminal's, so the driver comes first,
-/// then the terminal, then the filesystem. The driver finds both by name.
-///
 /// # Errors
 /// Returns an actor-creation failure description.
 pub fn start(_conduit: Option<PowerStateCoordinationInterfaceConduit>) -> Result<(), &'static str> {
-    let limit = divider::system_limit();
-    let parent_address = Some(LocalAddress::new(0, 0));
-
-    let configuration = || Configuration {
-        resource_budget: limit.budget,
+    let system_limit = divider::system_limit();
+    let configuration = Configuration {
+        resource_budget: system_limit.budget,
         overflow_policy: OverflowPolicy::DropNewest,
         lineage: Lineage::Untethered,
         survival: Survival::Detached,
     };
 
-    let driver = spawn_kernel_actor(
-        poll,
-        Name::from_static(CONSOLE_NAME),
-        configuration(),
-        parent_address,
-    )
-    .map_err(|_| "Console-Driver creation failed")?;
+    let parent = LocalAddress::new(0, 0);
 
-    let terminal = spawn_user_actor_with_argument(
-        TERMINAL_PROGRAM,
-        Name::from_static(TERMINAL_NAME),
-        configuration(),
-        parent_address,
-        driver.to_packed(),
-    )
-    .map_err(|_| "Terminal creation failed")?;
+    let _ =
+        enqueue(Actor::new(Name::CONSOLE, configuration, Image::Kernel(poll)).with_parent(parent));
 
-    let _ = spawn_user_actor_with_argument(
-        FILESYSTEM_PROGRAM,
-        Name::from_static(FILESYSTEM_NAME),
-        configuration(),
-        parent_address,
-        terminal.to_packed(),
-    )
-    .map_err(|_| "Filesystem creation failed")?;
+    let _ = enqueue(
+        Actor::new(Name::TERMINAL, configuration, Image::Elf(TERMINAL_PROGRAM)).with_parent(parent),
+    );
+
+    let _ = enqueue(
+        Actor::new(
+            Name::FILE_SYSTEM,
+            configuration,
+            Image::Elf(FILE_SYSTEM_PROGRAM),
+        )
+        .with_parent(parent),
+    );
 
     Ok(())
 }
@@ -123,7 +109,7 @@ impl Response {
 
     /// Carries the filesystem address, or nothing when none is bound.
     fn filesystem_bound(correlation: u64, filesystem: Option<LocalAddress>) -> Self {
-        let mut response = Self::empty(console::FILESYSTEM_BOUND_TAG, correlation);
+        let mut response = Self::empty(console::FILE_SYSTEM_BOUND_TAG, correlation);
         if let Some(address) = filesystem {
             let encoded = console::encode_address(address);
             if let Some(target) = response.bytes.get_mut(..encoded.len()) {
@@ -201,8 +187,8 @@ impl Driver {
             console::READ_TAG if length == 0 && self.requested_read.is_none() => {
                 self.requested_read = Some(metadata.correlation);
             }
-            console::FILESYSTEM_ADDRESS_TAG if length == 0 => {
-                let filesystem = find_actor_by_name(Name::from_static(FILESYSTEM_NAME));
+            console::FILE_SYSTEM_ADDRESS_TAG if length == 0 => {
+                let filesystem = find_actor_by_name(Name::FILE_SYSTEM);
                 self.pending = Some(Response::filesystem_bound(metadata.correlation, filesystem));
             }
             _ => {}
@@ -245,9 +231,8 @@ impl Driver {
 
 /// Waits until the boot-spawned terminal exists.
 fn await_terminal() -> LocalAddress {
-    let name = Name::from_static(TERMINAL_NAME);
     loop {
-        if let Some(address) = find_actor_by_name(name) {
+        if let Some(address) = find_actor_by_name(Name::TERMINAL) {
             return address;
         }
         processor::wait_for_event();

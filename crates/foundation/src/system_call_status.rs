@@ -34,6 +34,8 @@ pub enum SystemCallStatus {
     InvalidUserMemory = 10,
     /// The requested option is defined but not implemented.
     UnsupportedOperation = 11,
+    /// No live actor is registered under the requested name.
+    ActorNotFound = 12,
 }
 
 /// A status number the caller did not expect from the kernel.

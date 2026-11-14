@@ -14,13 +14,15 @@
 mod directory_commands;
 mod directory_path;
 mod line_display;
+mod prompt;
 
 use core::cmp::Reverse;
 use core::fmt::{self, Write};
 use foundation::{
-    address::LocalAddress, console, file_system_handle::FileSystemHandle, observation::State,
-    system_call_status::SystemCallStatus, tag::Tag,
+    address::LocalAddress, console, file_system_handle::FileSystemHandle, name::Name,
+    observation::State, system_call_status::SystemCallStatus, tag::Tag,
 };
+use runtime::inbox::find_actor_by_name;
 use runtime::{
     allocator::{self, Allocation},
     inbox::{self, MessageSelector},
@@ -1353,8 +1355,8 @@ impl Terminal {
 
 /// Uses its boot-authenticated driver binding, then handles interactive input.
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(driver_identity: u64) -> ! {
-    let driver = LocalAddress::from_packed(driver_identity);
+pub extern "C" fn _start() -> ! {
+    let driver = find_actor_by_name(Name::CONSOLE.as_str()).unwrap_or_else(|_| fail());
     let mut terminal = Terminal {
         driver,
         filesystem_address: None,
@@ -1371,7 +1373,7 @@ pub extern "C" fn _start(driver_identity: u64) -> ! {
         terminal.write(b"Observation copy tests passed\n");
     }
     terminal.write(b"\n\x1b[1;36mTerminal\x1b[0m\n\x1b[2mType help for commands.\x1b[0m\n");
-    terminal.write(PROMPT);
+    terminal.show_prompt();
     let mut editor = LineEditor::new();
     let mut input = [0_u8; console::MAXIMUM_INPUT_BYTE_COUNT];
     loop {
@@ -1379,22 +1381,32 @@ pub extern "C" fn _start(driver_identity: u64) -> ! {
         for &byte in input.get(..length).unwrap_or_else(|| fail()) {
             match editor.feed(byte) {
                 InputEvent::Ignored => {}
-                InputEvent::Echo(_) | InputEvent::Erase => terminal.redraw_line(editor.line()),
-                InputEvent::Complete => terminal.complete_line(&mut editor),
+                InputEvent::Echo(_) | InputEvent::Erase => {
+                    terminal.begin_update();
+                    terminal.redraw_line(editor.line());
+                    terminal.right_prompt();
+                    terminal.end_update();
+                }
+                InputEvent::Complete => {
+                    terminal.begin_update();
+                    terminal.complete_line(&mut editor);
+                    terminal.right_prompt();
+                    terminal.end_update();
+                }
                 InputEvent::Cancel => {
                     terminal.write(b"^C\n");
-                    terminal.write(PROMPT);
+                    terminal.show_prompt();
                 }
                 InputEvent::TooLong => {
                     terminal.write(b"\n\x1b[31mCommand too long; discarded.\x1b[0m\n");
-                    terminal.write(PROMPT);
+                    terminal.show_prompt();
                     editor.reset();
                 }
                 InputEvent::Submit => {
                     terminal.write(b"\n");
                     terminal.execute(editor.line());
                     editor.reset();
-                    terminal.write(PROMPT);
+                    terminal.show_prompt();
                 }
             }
         }

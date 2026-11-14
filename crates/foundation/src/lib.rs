@@ -8,6 +8,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod actor;
 pub mod address;
 pub mod autopsy;
 pub mod cause;
@@ -23,6 +24,7 @@ pub mod frame_bitmap;
 /// Bounded physical memory, reservation, and CPU discovery from firmware.
 pub mod hardware_description;
 pub mod message_layout;
+pub mod name;
 pub mod node_identifier;
 pub mod page_table_entry;
 /// Physical frame ownership and reserved-memory planning for early bootstrap.
