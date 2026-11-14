@@ -11,15 +11,14 @@
 use core::hint::spin_loop;
 
 use foundation::{
+    actor::{Actor, Image},
     address::LocalAddress,
+    name::Name,
     stress::{BOOTSTRAP_TAG, Bootstrap, HAMMER_TAG, Scenario},
 };
 
 use crate::{
-    actors::{
-        divider::default_configuration, inbox::MessageMetadata, name::Name,
-        table::spawn_light_user_actor,
-    },
+    actors::{divider::default_configuration, inbox::MessageMetadata, table},
     architecture::aarch64::{early_console::EarlyConsole, processor, time::read_counter_value},
     information,
     messaging::delivery::tell_actor,
@@ -142,12 +141,11 @@ impl Plan {
 
     /// Spawn failures are expected under stress, so they are counted, not fatal.
     fn spawn(&mut self) -> Option<LocalAddress> {
-        match spawn_light_user_actor(
-            GENESIS_PROGRAM,
+        match table::enqueue(Actor::new(
             Name::UNNAMED,
             default_configuration(),
-            None,
-        ) {
+            Image::Elf(GENESIS_PROGRAM),
+        )) {
             Ok(actor) => {
                 self.spawned += 1;
                 Some(actor)
