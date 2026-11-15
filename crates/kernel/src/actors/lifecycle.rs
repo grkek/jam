@@ -12,7 +12,7 @@
 
 use core::fmt::Write;
 
-use foundation::{address::LocalAddress, cause::Cause};
+use foundation::{address::LocalAddress, cause::Cause, name::Name};
 
 use super::{
     control_block::State,
@@ -202,15 +202,11 @@ fn reclaim_exiting_actor(address: LocalAddress) {
         {
             return None;
         }
-        Some((
-            actor.address_space.take(),
-            actor.address_space_identifier,
-            actor.saved_frame_address,
-        ))
+        Some((actor.address_space.take(), actor.address_space_identifier))
     })
     .flatten();
 
-    let Some((address_space, address_space_identifier, saved_frame_address)) = detached else {
+    let Some((address_space, address_space_identifier)) = detached else {
         return;
     };
 
@@ -225,12 +221,6 @@ fn reclaim_exiting_actor(address: LocalAddress) {
         let released = with_frame_allocator(|allocator| {
             if let Some(address_space) = outstanding_address_space.take() {
                 let _ = address_space.destroy(allocator);
-            }
-
-            // Free the kernel stack frame back to the allocator
-            if saved_frame_address != 0 {
-                // Convert the address/frame as required by your frame allocator (e.g., physical frame address)
-                let _ = allocator.free_frame(saved_frame_address);
             }
         });
         if released.is_none() {
@@ -262,10 +252,10 @@ fn reclaim_exiting_actor(address: LocalAddress) {
 
         actor.generation_counter = actor.generation_counter.wrapping_add(1);
         actor.parent_address = None;
+        actor.name = Name::UNNAMED;
         actor.configuration = None;
         actor.saved_frame_address = 0;
         actor.address_space_identifier = 0;
-        actor.saved_frame_address = 0;
         actor.exit_cause = None;
         actor.dynamic_memory_page_count = 0;
         actor.transition_to(State::Free);
@@ -284,6 +274,18 @@ fn reclaim_exiting_actor(address: LocalAddress) {
 pub fn end_current_actor(cause: Cause) -> Option<usize> {
     let core_local = current_core_local()?;
     let core_index = core_local.core_index();
+
+    // The residency test has no intentional actor faults. A failed EL0
+    // assertion must never masquerade as a successful cleanup stress test.
+    #[cfg(feature = "residency")]
+    if cause != Cause::Completed {
+        error!(
+            EarlyConsole,
+            "Residency actor faulted on core {core_index}: {cause:?}"
+        );
+        crate::architecture::aarch64::power_interface::halt_machine();
+    }
+
     let slot_index = core_local.current_slot_index();
     if slot_index == NO_ACTOR {
         error!(
@@ -360,4 +362,89 @@ pub fn end_current_actor(cause: Cause) -> Option<usize> {
 
     let next = pick_next_after_finish(core_local);
     Some(next)
+}
+
+/// Why a kernel-requested termination of a parked actor was rejected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitingTerminationError {
+    /// The table slot does not exist, is free, or has a different generation.
+    InvalidAddress,
+    /// The actor is not parked or still owns a runnable queue entry.
+    NotWaiting,
+    /// A core still reports this actor as current, or cleanup is already in flight.
+    NotQuiescent,
+    /// The actor lacks its required inbox.
+    MissingInbox,
+    /// Cleanup could not safely finish; the actor remains quarantined in `Exiting`.
+    ReclamationIncomplete,
+}
+
+/// Terminates an exact generation of a safely parked local actor.
+///
+/// Closing the inbox and changing `Waiting` to `Exiting` happen under the same
+/// actor lock used for message admission and wakeups. A concurrent sender
+/// therefore either wakes the actor first (termination is rejected), or sees
+/// a closed inbox (termination wins). Running and queued actors are untouched.
+///
+/// This is kernel-internal machinery, not an EL0 permission or system-call
+/// interface. Kernel-initiated exits use [`Cause::KernelTerminated`].
+///
+/// # Errors
+///
+/// Fails for stale addresses, non-waiting actors, unavailable inboxes, or
+/// incomplete reclamation. Incomplete cleanup never recycles the actor slot.
+pub fn terminate_waiting_actor(address: LocalAddress) -> Result<(), WaitingTerminationError> {
+    // Lock acquisition and reclamation must not be interrupted by a local
+    // scheduler tick. Preserve the caller's previous interrupt-mask state.
+    let previous_interrupt_mask = crate::architecture::aarch64::processor::mask_interrupts();
+    let result = terminate_waiting_actor_with_interrupts_masked(address);
+    crate::architecture::aarch64::processor::restore_interrupts(previous_interrupt_mask);
+    result
+}
+
+/// Performs parked-actor termination while this core's IRQs are masked.
+fn terminate_waiting_actor_with_interrupts_masked(
+    address: LocalAddress,
+) -> Result<(), WaitingTerminationError> {
+    let slot_index = address.slot_index() as usize;
+    let marked_exiting = with_control_block(slot_index, |actor| {
+        if actor.state == State::Free || actor.generation_counter != address.generation_counter() {
+            return Err(WaitingTerminationError::InvalidAddress);
+        }
+        if actor.state != State::Waiting || actor.queued {
+            return Err(WaitingTerminationError::NotWaiting);
+        }
+        if actor.pending_message_releases != 0
+            || core_locals()
+                .iter()
+                .any(|core| core.current_slot_index() == slot_index)
+        {
+            return Err(WaitingTerminationError::NotQuiescent);
+        }
+        let inbox = actor
+            .inbox
+            .as_mut()
+            .ok_or(WaitingTerminationError::MissingInbox)?;
+        inbox.close();
+        actor.exit_cause = Some(Cause::KernelTerminated);
+        actor.transition_to(State::Exiting);
+        Ok(())
+    })
+    .ok_or(WaitingTerminationError::InvalidAddress)?;
+    marked_exiting?;
+
+    // The actor is no longer executing or on a run queue. Its kernel stack is
+    // retained for slot reuse; only actor-owned mappings and messages are freed.
+    reclaim_exiting_actor(address);
+
+    let recycled = with_control_block(slot_index, |actor| {
+        actor.state == State::Free
+            && actor.generation_counter == address.generation_counter().wrapping_add(1)
+    })
+    .unwrap_or(false);
+    if recycled {
+        Ok(())
+    } else {
+        Err(WaitingTerminationError::ReclamationIncomplete)
+    }
 }

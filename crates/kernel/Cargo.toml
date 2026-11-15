@@ -21,6 +21,7 @@ console = []
 guard-page-fault-test = []
 raspberry-pi-4 = []
 stress = []
+residency = ["stress"]
 
 [lints]
 workspace = true

@@ -4,5 +4,8 @@ pub mod device_tree;
 pub mod entry;
 pub mod secondary_cores;
 
-#[cfg(feature = "stress")]
+#[cfg(feature = "residency")]
+pub mod residency;
+
+#[cfg(all(feature = "stress", not(feature = "residency")))]
 pub mod stress;

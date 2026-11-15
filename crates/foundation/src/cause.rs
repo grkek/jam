@@ -12,6 +12,8 @@ pub enum Cause {
         /// Address of the actor that requested the termination.
         requester_address: Address,
     },
+    /// The kernel forcibly terminated an actor without a userland requester.
+    KernelTerminated,
     /// A tethered actor ended abnormally and the failure travelled along the tether.
     Tethered {
         /// Address of the actor whose failure caused this one to fall.
@@ -56,6 +58,7 @@ mod tests {
         assert!(!Cause::Completed.is_abnormal());
         assert!(Cause::Panicked.is_abnormal());
         assert!(Cause::Faulted.is_abnormal());
+        assert!(Cause::KernelTerminated.is_abnormal());
         assert!(
             Cause::Terminated {
                 requester_address: someone

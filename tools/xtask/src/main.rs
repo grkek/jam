@@ -32,6 +32,8 @@ const TARGET_TRIPLE: &str = "aarch64-unknown-none-softfloat";
 const RASPBERRY_PI_4_FEATURE: &str = "raspberry-pi-4";
 /// Cargo feature of the kernel crate that compiles in the boot-time stress plan.
 const STRESS_FEATURE: &str = "stress";
+/// Cargo feature for the standalone 1,000-actor residency stress plan.
+const STRESS_RESIDENCY_FEATURE: &str = "residency";
 /// A `kernel8.img` larger than this means the linker script's load addresses are wrong.
 const MAXIMUM_IMAGE_BYTE_COUNT: u64 = 16 * 1024 * 1024;
 /// Repository containing Raspberry Pi boot firmware and device trees.
@@ -114,6 +116,8 @@ struct Options {
     board: Option<Board>,
     /// Compile the boot-time stress plan into the kernel.
     stress: bool,
+    /// Run the standalone resident-population audit rather than the normal stress plan.
+    residency: bool,
 }
 
 impl Options {
@@ -128,22 +132,30 @@ impl Options {
         if self.stress {
             features.push(STRESS_FEATURE);
         }
+        if self.residency {
+            features.push(STRESS_RESIDENCY_FEATURE);
+        }
         features
     }
 }
 
-/// Parses `--release`, `--stress` and `--board <name>`.
+/// Parses `--release`, `--stress`, `--residency`, and `--board <name>`.
 fn parse_options(arguments: &[String]) -> Result<Options, String> {
     let mut options = Options {
         release: false,
         board: None,
         stress: false,
+        residency: false,
     };
     let mut remaining = arguments.iter();
     while let Some(argument) = remaining.next() {
         match argument.as_str() {
             "--release" => options.release = true,
             "--stress" => options.stress = true,
+            "--residency" => {
+                options.stress = true;
+                options.residency = true;
+            }
             "--board" => {
                 let name = remaining.next().ok_or("--board needs a board name")?;
                 options.board =
@@ -551,7 +563,7 @@ fn check(root: &Path, options: &Options) -> Result<(), String> {
         .board
         .map_or(Board::ALL.to_vec(), |board| vec![board]);
     for board in boards {
-        for stress in [false, true] {
+        for (stress, residency) in [(false, false), (true, false), (true, true)] {
             let mut command = Command::new(cargo_program());
             command
                 .current_dir(root)
@@ -576,6 +588,7 @@ fn check(root: &Path, options: &Options) -> Result<(), String> {
                 release: options.release,
                 board: options.board,
                 stress,
+                residency,
             }
             .kernel_features(board)
             .into_iter()
@@ -588,7 +601,13 @@ fn check(root: &Path, options: &Options) -> Result<(), String> {
             let description = format!(
                 "Clippy for {}{}",
                 board.name(),
-                if stress { " with the stress plan" } else { "" }
+                if residency {
+                    " with the residency stress plan"
+                } else if stress {
+                    " with the stress plan"
+                } else {
+                    ""
+                }
             );
             run_checked(&mut command, &description)?;
         }
@@ -635,6 +654,7 @@ fn print_usage() {
          check                 check formatting and Clippy (with and without --stress)\n\n\
          options:\n  \
          --stress              compile the boot-time stress plan into the kernel\n  \
+         --residency    run the dedicated 1,000-actor residency audit\n  \
          --release             use the release profile\n  \
          --board <name>        build or run only this board"
     );

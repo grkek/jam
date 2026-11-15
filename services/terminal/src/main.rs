@@ -1,7 +1,7 @@
 //! EL0 terminal actor: command editing, observations, and directory requests.
 //!
 //! Every console byte travels through actor messages. This actor has no device
-//! mapping and no direct access to kernel structures. The driver address arrives
+//! mapping and no direct access to kernel structures. The console address arrives
 //! in the boot-authenticated initial x0 register; subsequent exchanges require its authenticated sender.
 //!
 //! Stack discipline: this actor runs on a small fixed EL0 stack. Every command
@@ -22,7 +22,7 @@ use foundation::{
     address::LocalAddress, console, file_system_handle::FileSystemHandle, name::Name,
     observation::State, system_call_status::SystemCallStatus, tag::Tag,
 };
-use runtime::inbox::find_actor_by_name;
+
 use runtime::{
     allocator::{self, Allocation},
     inbox::{self, MessageSelector},
@@ -494,8 +494,8 @@ impl Write for Sink<'_> {
 
 /// Bounded output pipeline with ordered acknowledgements and pulled input.
 struct Terminal {
-    driver: LocalAddress,
-    /// Boot-bound directory service, resolved lazily through the console driver.
+    console: LocalAddress,
+    /// Boot-bound directory service, resolved lazily through the console.
     filesystem_address: Option<LocalAddress>,
     /// Root filesystem handle held for the lifetime of this terminal session.
     filesystem_root_handle: Option<FileSystemHandle>,
@@ -515,7 +515,7 @@ impl Terminal {
         self.flush_output();
         self.correlation = self.correlation.checked_add(1).unwrap_or_else(|| fail());
         loop {
-            match inbox::tell_actor(self.driver, tag, self.correlation, payload) {
+            match inbox::tell_actor(self.console, tag, self.correlation, payload) {
                 Ok(()) => return self.correlation,
                 Err(error) if error.status == SystemCallStatus::BudgetExhausted => {
                     core::hint::spin_loop();
@@ -525,7 +525,7 @@ impl Terminal {
         }
     }
 
-    /// Waits for the driver's response to one specific request.
+    /// Waits for the console's response to one specific request.
     fn response<'buffer>(
         &self,
         tag: Tag,
@@ -534,7 +534,7 @@ impl Terminal {
     ) -> &'buffer [u8] {
         inbox::await_matching(
             MessageSelector {
-                sender: Some(self.driver),
+                sender: Some(self.console),
                 tag: Some(tag),
                 correlation: Some(correlation),
             },
@@ -583,7 +583,7 @@ impl Terminal {
             self.correlation = self.correlation.checked_add(1).unwrap_or_else(|| fail());
             let correlation = self.correlation;
             loop {
-                match inbox::tell_actor(self.driver, console::WRITE_TAG, correlation, chunk) {
+                match inbox::tell_actor(self.console, console::WRITE_TAG, correlation, chunk) {
                     Ok(()) => break,
                     Err(error) if error.status == SystemCallStatus::BudgetExhausted => {
                         if self.outstanding_output_count == 0 {
@@ -1353,12 +1353,12 @@ impl Terminal {
     }
 }
 
-/// Uses its boot-authenticated driver binding, then handles interactive input.
+/// Uses its boot-authenticated console binding, then handles interactive input.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-    let driver = find_actor_by_name(Name::CONSOLE.as_str()).unwrap_or_else(|_| fail());
+    let console = inbox::find_actor_by_name(Name::CONSOLE.as_str()).unwrap_or_else(|_| fail());
     let mut terminal = Terminal {
-        driver,
+        console,
         filesystem_address: None,
         filesystem_root_handle: None,
         working_directory: directory_path::DirectoryPath::root(),

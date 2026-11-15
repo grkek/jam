@@ -12,7 +12,9 @@ use foundation::{
 
 use super::{device_tree::load_device_tree, secondary_cores::start_secondary_cores};
 
-#[cfg(feature = "stress")]
+#[cfg(feature = "residency")]
+use super::residency;
+#[cfg(all(feature = "stress", not(feature = "residency")))]
 use super::stress;
 
 use crate::{
@@ -362,9 +364,12 @@ fn initialise_stack_tracking() {
     verify_reclamation_stacks();
 }
 
-/// With the stress plan compiled in, run it and power off so CI can see the exit.
+/// With a stress plan compiled in, run it and power off so CI can see the exit.
 #[cfg(feature = "stress")]
 fn initialise_user_land(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> ! {
+    #[cfg(feature = "residency")]
+    residency::run();
+    #[cfg(not(feature = "residency"))]
     stress::run();
     // QEMU `virt` powers off here. Boards without a power interface park the core.
     power_off_or_park(conduit)

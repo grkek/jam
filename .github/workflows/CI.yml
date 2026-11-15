@@ -34,13 +34,15 @@ jobs:
         run: cargo xtask build --release --board virtual
 
   boot:
-    name: Boot ${{ matrix.board }}
+    name: Boot ${{ matrix.board }} (${{ matrix.suite }})
     needs: check
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
+        board: [virtual, raspberry-pi-4]
+        suite: [stress, residency]
         include:
           - board: virtual
             os: ubuntu-latest
@@ -71,15 +73,24 @@ jobs:
         if: matrix.board == 'raspberry-pi-4'
         run: rm -rf target/raspberry-pi-4/firmware
 
-      - name: Build ${{ matrix.board }}
-        run: cargo xtask build --board ${{ matrix.board }} --stress
+      - name: Build ${{ matrix.board }} (${{ matrix.suite }})
+        run: cargo xtask build --board ${{ matrix.board }} --${{ matrix.suite }}
 
-      - name: Boot ${{ matrix.board }} and run the stress plan
-        run: bash tools/ci/boot-test.sh "boot-${{ matrix.board }}.log" 120 cargo xtask ${{ matrix.run }} --stress
+      - name: Boot ${{ matrix.board }} and run ${{ matrix.suite }}
+        shell: bash
+        run: |
+          log="boot-${{ matrix.board }}-${{ matrix.suite }}.log"
+          if [[ "${{ matrix.suite }}" == "residency" ]]; then
+            bash tools/ci/boot-test.sh "$log" 300 --residency \
+              cargo xtask ${{ matrix.run }} --residency
+          else
+            bash tools/ci/boot-test.sh "$log" 120 \
+              cargo xtask ${{ matrix.run }} --stress
+          fi
 
       - name: Upload boot log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: boot-log-${{ matrix.board }}
-          path: boot-${{ matrix.board }}.log
+          name: boot-log-${{ matrix.board }}-${{ matrix.suite }}
+          path: boot-${{ matrix.board }}-${{ matrix.suite }}.log

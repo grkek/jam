@@ -3,6 +3,7 @@
 use core::hint::spin_loop;
 
 use foundation::address::LocalAddress;
+use foundation::stress::LOAD_START_TAG;
 use runtime::inbox;
 
 use crate::{
@@ -12,6 +13,15 @@ use crate::{
 
 const MAXIMUM_SENDERS: usize = 16;
 const DEAD_LETTER_MESSAGES: u64 = 4096;
+
+/// Waits for the full load population, then reuses the validated FIFO sender.
+///
+/// The collector checks payload contents, sender indices, and per-sender order.
+pub fn load_sender(assignment: &Assignment, record: &mut [u8]) {
+    let start = inbox::await_matching(tagged(LOAD_START_TAG), record).or_fail();
+    require(start.payload.is_empty());
+    collector_sender(assignment);
+}
 
 /// Payload length for message `sequence`: varies so sizes interleave.
 fn collector_payload_length(sequence: u64) -> usize {

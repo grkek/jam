@@ -10,6 +10,18 @@ pub const PROTOCOL: u16 = 0x5354;
 pub const BOOTSTRAP_TAG: Tag = Tag::new(PROTOCOL, 0x0001);
 /// Tag of the junk the kernel sends to idle or dead actors.
 pub const HAMMER_TAG: Tag = Tag::new(PROTOCOL, 0x0002);
+/// Releases a parked race sender, prompting it to try waking its peer.
+pub const RACE_START_TAG: Tag = Tag::new(PROTOCOL, 0x0003);
+/// The message a race receiver waits for until the sender wins.
+pub const RACE_WAKE_TAG: Tag = Tag::new(PROTOCOL, 0x0004);
+/// Releases a gated sender in the sustained concurrent-load scenario.
+pub const LOAD_START_TAG: Tag = Tag::new(PROTOCOL, 0x0005);
+/// Allows an EL0 recovery probe to verify an already-reclaimed victim.
+pub const RECOVERY_VERIFY_TAG: Tag = Tag::new(PROTOCOL, 0x0006);
+/// Releases long-lived senders after all reincarnation traffic has been validated.
+pub const REINCARNATION_STOP_TAG: Tag = Tag::new(PROTOCOL, 0x0007);
+/// Stale-address sends interleaved with each valid reincarnation probe payload.
+pub const REINCARNATION_STALE_SENDS_PER_MESSAGE: u64 = 4;
 /// Little-endian `u64` words in a bootstrap message.
 pub const BOOTSTRAP_WORDS: usize = 5;
 /// Encoded size of a bootstrap message.
@@ -49,6 +61,18 @@ pub enum Scenario {
     FillVictim = 12,
     /// Waits for a message nobody sends.
     BlockForever = 13,
+    /// Waits for a peer's wake message and then terminates normally.
+    RaceReceiver = 14,
+    /// Waits for kernel permission, then attempts to wake the specified peer.
+    RaceSender = 15,
+    /// Waits for the load start signal, then sends a checked message sequence.
+    LoadSender = 16,
+    /// Sends once to a live victim, then verifies its stale address after termination.
+    RecoveryProbe = 17,
+    /// Checks stale incarnations while sending validated data to a replacement.
+    ReincarnationProbe = 18,
+    /// Sends validated background traffic, then remains resident until released.
+    ReincarnationTrafficSender = 19,
     /// Deliberately triggers a breakpoint exception.
     CrashBreakpoint = 20,
     /// Deliberately triggers a null-pointer write exception.
@@ -67,7 +91,7 @@ pub enum Scenario {
 
 impl Scenario {
     /// Every scenario; the single source of truth for [`Scenario::from_number`].
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 27] = [
         Self::PingPong,
         Self::CollectorSender,
         Self::Collector,
@@ -82,6 +106,12 @@ impl Scenario {
         Self::DeadLetter,
         Self::FillVictim,
         Self::BlockForever,
+        Self::RaceReceiver,
+        Self::RaceSender,
+        Self::LoadSender,
+        Self::RecoveryProbe,
+        Self::ReincarnationProbe,
+        Self::ReincarnationTrafficSender,
         Self::CrashBreakpoint,
         Self::CrashNullWrite,
         Self::CrashExecuteData,
@@ -115,6 +145,12 @@ impl Scenario {
             11 => Some(Self::DeadLetter),
             12 => Some(Self::FillVictim),
             13 => Some(Self::BlockForever),
+            14 => Some(Self::RaceReceiver),
+            15 => Some(Self::RaceSender),
+            16 => Some(Self::LoadSender),
+            17 => Some(Self::RecoveryProbe),
+            18 => Some(Self::ReincarnationProbe),
+            19 => Some(Self::ReincarnationTrafficSender),
             20 => Some(Self::CrashBreakpoint),
             21 => Some(Self::CrashNullWrite),
             22 => Some(Self::CrashExecuteData),
@@ -231,7 +267,7 @@ mod tests {
     #[test]
     fn unknown_scenario_is_rejected() {
         assert_eq!(Scenario::from_number(u64::MAX), None);
-        assert_eq!(Scenario::from_number(14), None);
+        assert_eq!(Scenario::from_number(27), None);
     }
 
     #[test]

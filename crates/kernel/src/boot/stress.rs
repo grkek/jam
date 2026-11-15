@@ -18,9 +18,13 @@ use foundation::{
 };
 
 use crate::{
-    actors::{divider::default_configuration, inbox::MessageMetadata, table},
+    actors::{
+        control_block::State, divider::default_configuration, inbox::MessageMetadata,
+        message_storage::MESSAGE_POOL, table,
+    },
     architecture::aarch64::{early_console::EarlyConsole, processor, time::read_counter_value},
     information,
+    memory::frame_allocator::with_frame_allocator,
     messaging::delivery::tell_actor,
     system_calls::actor_calls::pack_local_address,
     warning,
@@ -52,6 +56,9 @@ const FAULTS: [Scenario; 7] = [
 const CPU_HOGS: usize = 2;
 const DEAD_LETTER_SPAMMERS: usize = 2;
 
+const RECLAMATION_CYCLES: usize = 32;
+const RECLAMATION_TIMEOUT_MILLISECONDS: u64 = 2_000;
+
 const CHURN_WAVES: usize = 8;
 const CHURN_WAVE_SIZE: usize = 32;
 const CHURN_INTERVAL_MILLISECONDS: u64 = 500;
@@ -75,6 +82,7 @@ pub fn run() {
     information!(EarlyConsole, "Stress plan: beginning actor creation");
 
     let mut plan = Plan::new();
+    plan.verify_reclamation();
     plan.request_reply_pairs();
     plan.collector_flood();
     plan.server_with_clients();
@@ -120,6 +128,66 @@ impl Plan {
         }
     }
 
+    /// Proves that a complete actor lifetime returns its frames and message charges.
+    ///
+    /// This runs before the concurrent stress scenarios so its resource baseline is stable.
+    fn verify_reclamation(&mut self) {
+        let expected_free_frames = with_frame_allocator(|allocator| allocator.free_frame_count())
+            .expect("Frame allocator unavailable before reclamation audit");
+        let expected_message_pool = MESSAGE_POOL.lock().statistics();
+
+        for cycle in 1..=RECLAMATION_CYCLES {
+            let address = self
+                .spawn()
+                .expect("Failed to create reclamation test actor");
+            assert!(
+                self.boot_solo(address, Scenario::QuickExit, 0),
+                "Failed to bootstrap reclamation test actor {address}"
+            );
+
+            let deadline =
+                read_counter_value().saturating_add(ticks_for(RECLAMATION_TIMEOUT_MILLISECONDS));
+            loop {
+                let recycled = table::with_control_block(address.slot_index() as usize, |actor| {
+                    actor.state == State::Free
+                        && actor.generation_counter != address.generation_counter()
+                })
+                .unwrap_or(false);
+
+                if recycled {
+                    break;
+                }
+                assert!(
+                    read_counter_value() < deadline,
+                    "Actor {address} was not reclaimed during cycle {cycle}"
+                );
+                processor::wait_for_event();
+            }
+
+            let free_frames = with_frame_allocator(|allocator| allocator.free_frame_count())
+                .expect("Frame allocator unavailable after actor exit");
+            assert_eq!(
+                free_frames, expected_free_frames,
+                "Physical frame leak during actor reclamation cycle {cycle}"
+            );
+
+            let current_message_pool = MESSAGE_POOL.lock().statistics();
+            assert_eq!(
+                current_message_pool.allocated, expected_message_pool.allocated,
+                "Message handle leak during actor reclamation cycle {cycle}"
+            );
+            assert_eq!(
+                current_message_pool.charged_bytes, expected_message_pool.charged_bytes,
+                "Message charge leak during actor reclamation cycle {cycle}"
+            );
+        }
+
+        information!(
+            EarlyConsole,
+            "Reclamation audit passed: {RECLAMATION_CYCLES} actor lifetimes, no frame or message-pool drift"
+        );
+    }
+
     fn report(&self, label: &str) {
         information!(
             EarlyConsole,
@@ -150,8 +218,15 @@ impl Plan {
                 self.spawned += 1;
                 Some(actor)
             }
-            Err(_) => {
+            Err(error) => {
                 self.spawn_failures += 1;
+                if self.spawn_failures == 1 {
+                    warning!(
+                        EarlyConsole,
+                        "First actor spawn failure after {} successes: {error:?}",
+                        self.spawned
+                    );
+                }
                 None
             }
         }

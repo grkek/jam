@@ -4,6 +4,7 @@ mod faults;
 mod flood;
 mod lifecycle;
 mod pair;
+mod recovery;
 mod rpc;
 mod validate;
 
@@ -27,6 +28,14 @@ pub fn run(assignment: &Assignment, record: &mut [u8]) {
         Scenario::QuickExit => {}
         Scenario::SpinHog => lifecycle::spin_hog(assignment),
         Scenario::BlockForever => lifecycle::block_forever(record),
+        Scenario::RaceReceiver => lifecycle::race_receiver(record),
+        Scenario::RaceSender => lifecycle::race_sender(assignment, record),
+        Scenario::LoadSender => flood::load_sender(assignment, record),
+        Scenario::RecoveryProbe => recovery::probe(assignment, record),
+        Scenario::ReincarnationProbe => recovery::reincarnation_probe(assignment, record),
+        Scenario::ReincarnationTrafficSender => {
+            recovery::reincarnation_traffic_sender(assignment, record)
+        }
         Scenario::CrashBreakpoint => faults::breakpoint(),
         Scenario::CrashNullWrite => faults::null_write(),
         Scenario::CrashExecuteData => faults::execute_data(),
