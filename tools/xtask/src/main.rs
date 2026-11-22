@@ -13,12 +13,10 @@ use std::{
 };
 
 /// Workspace packages checked for the bare-metal architecture.
-const BARE_METAL_PACKAGES: [&str; 10] = [
+const BARE_METAL_PACKAGES: [&str; 8] = [
     "kernel",
     "runtime",
     "genesis",
-    "terminal",
-    "filesystem",
     "registry",
     "observatory",
     "distribution",
@@ -210,14 +208,6 @@ fn cargo_build(root: &Path, package: &str, options: &Options, features: &[&str])
     command.arg("--target-dir").arg(root.join("target"));
     if package == "kernel" {
         command.env("GENESIS_ELF_PATH", genesis_program_path(root, options));
-        command.env(
-            "FILE_SYSTEM_ELF_PATH",
-            genesis_program_path(root, options).with_file_name("filesystem"),
-        );
-        command.env(
-            "TERMINAL_ELF_PATH",
-            genesis_program_path(root, options).with_file_name("terminal"),
-        );
     }
     if options.release {
         command.arg("--release");
@@ -393,14 +383,6 @@ fn build_board(root: &Path, board: Board, options: &Options) -> Result<PathBuf, 
     println!("== building for {}", board.name());
     build_genesis(root, options)?;
     run_checked(
-        &mut cargo_build(root, "terminal", options, &[]),
-        "building terminal",
-    )?;
-    run_checked(
-        &mut cargo_build(root, "filesystem", options, &[]),
-        "building filesystem",
-    )?;
-    run_checked(
         &mut cargo_build(root, "kernel", options, &options.kernel_features(board)),
         "building the kernel",
     )?;
@@ -551,14 +533,6 @@ fn check(root: &Path, options: &Options) -> Result<(), String> {
     )?;
 
     build_genesis(root, options)?;
-    run_checked(
-        &mut cargo_build(root, "terminal", options, &[]),
-        "building terminal",
-    )?;
-    run_checked(
-        &mut cargo_build(root, "filesystem", options, &[]),
-        "building filesystem",
-    )?;
     let boards = options
         .board
         .map_or(Board::ALL.to_vec(), |board| vec![board]);
@@ -569,15 +543,7 @@ fn check(root: &Path, options: &Options) -> Result<(), String> {
                 .current_dir(root)
                 .args(["clippy", "--target", TARGET_TRIPLE, "--target-dir"])
                 .arg(root.join("target"))
-                .env("GENESIS_ELF_PATH", genesis_program_path(root, options))
-                .env(
-                    "FILE_SYSTEM_ELF_PATH",
-                    genesis_program_path(root, options).with_file_name("filesystem"),
-                )
-                .env(
-                    "TERMINAL_ELF_PATH",
-                    genesis_program_path(root, options).with_file_name("terminal"),
-                );
+                .env("GENESIS_ELF_PATH", genesis_program_path(root, options));
             for package in BARE_METAL_PACKAGES {
                 command.args(["--package", package]);
             }

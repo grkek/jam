@@ -55,14 +55,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "filesystem"
-version = "0.1.0"
-dependencies = [
- "foundation",
- "runtime",
-]
-
-[[package]]
 name = "foundation"
 version = "0.1.0"
 dependencies = [
@@ -141,14 +133,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
-]
-
-[[package]]
-name = "terminal"
-version = "0.1.0"
-dependencies = [
- "foundation",
- "runtime",
 ]
 
 [[package]]

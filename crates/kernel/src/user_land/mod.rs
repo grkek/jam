@@ -1,4 +1,4 @@
-//! This module contains the user-land code that is linked into the kernel binary. It is responsible for starting the user-land actors, including the console driver, terminal, filesystem, etc.
+//! This module contains the user-land code that is linked into the kernel binary. It is responsible for starting the user-land actors.
 
 pub mod console;
 

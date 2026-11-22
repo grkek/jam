@@ -13,13 +13,8 @@ pub mod address;
 pub mod autopsy;
 pub mod cause;
 pub mod configuration;
-pub mod console;
 pub mod device_tree;
 pub mod farewell;
-pub mod file_system;
-pub mod file_system_error;
-pub mod file_system_handle;
-pub mod file_system_protocol;
 pub mod frame_bitmap;
 /// Bounded physical memory, reservation, and CPU discovery from firmware.
 pub mod hardware_description;

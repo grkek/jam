@@ -55,36 +55,6 @@ fn configure_compilation() -> Result<(), String> {
         .ok_or("the Genesis ELF path must be valid UTF-8")?;
     println!("cargo:rerun-if-changed={genesis_path}");
     println!("cargo:rustc-env=GENESIS_ELF_PATH={genesis_path}");
-    println!("cargo:rerun-if-env-changed=TERMINAL_ELF_PATH");
-    if env::var_os("CARGO_FEATURE_STRESS").is_none() {
-        let terminal = env::var_os("TERMINAL_ELF_PATH")
-            .map(PathBuf::from)
-            .ok_or("TERMINAL_ELF_PATH is missing; use cargo xtask build")?;
-        let terminal = terminal
-            .canonicalize()
-            .map_err(|error| format!("cannot locate terminal: {error}"))?;
-        if !terminal.is_file() {
-            return Err("terminal ELF is not a file".into());
-        }
-        let terminal = terminal.to_str().ok_or("terminal ELF path must be UTF-8")?;
-        println!("cargo:rerun-if-changed={terminal}");
-        println!("cargo:rustc-env=TERMINAL_ELF_PATH={terminal}");
-        println!("cargo:rerun-if-env-changed=FILE_SYSTEM_ELF_PATH");
-        let filesystem = env::var_os("FILE_SYSTEM_ELF_PATH")
-            .map(PathBuf::from)
-            .ok_or("FILE_SYSTEM_ELF_PATH is missing; use cargo xtask build")?;
-        let filesystem = filesystem
-            .canonicalize()
-            .map_err(|error| format!("cannot locate filesystem: {error}"))?;
-        if !filesystem.is_file() {
-            return Err("filesystem ELF is not a file".into());
-        }
-        let filesystem = filesystem
-            .to_str()
-            .ok_or("filesystem ELF path must be UTF-8")?;
-        println!("cargo:rerun-if-changed={filesystem}");
-        println!("cargo:rustc-env=FILE_SYSTEM_ELF_PATH={filesystem}");
-    }
     Ok(())
 }
 

@@ -369,13 +369,15 @@ fn initialise_stack_tracking() {
 fn initialise_user_land(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> ! {
     #[cfg(feature = "residency")]
     residency::run();
+
     #[cfg(not(feature = "residency"))]
     stress::run();
+
     // QEMU `virt` powers off here. Boards without a power interface park the core.
     power_off_or_park(conduit)
 }
 
-/// Starts Genesis, the terminal, and the temporary polling console driver.
+/// Starts the current user land.
 #[cfg(not(feature = "stress"))]
 fn initialise_user_land(conduit: Option<PowerStateCoordinationInterfaceConduit>) -> ! {
     use crate::architecture::aarch64::processor::wait_for_event;

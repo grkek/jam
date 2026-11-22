@@ -29,7 +29,7 @@ impl EarlyConsole {
         }
     }
 
-    /// Serializes terminal output with kernel logs, translating newlines to CRLF.
+    /// Serializes console output with kernel logs, translating newlines to CRLF.
     pub fn write_bytes(bytes: &[u8]) {
         let _guard = CONSOLE_LOCK.lock();
         for &byte in bytes {

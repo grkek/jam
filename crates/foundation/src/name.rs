@@ -5,14 +5,8 @@ use core::fmt;
 /// Maximum number of bytes in an actor name.
 pub const MAXIMUM_NAME_BYTE_COUNT: usize = 32;
 
-/// System-wide address for the Console actor, can be addressed through the `FindActorByName` system call.
-const CONSOLE_NAME: &str = "LocalHost.Console";
-/// System-wide address for the File-System actor, can be addressed through the `FindActorByName` system call.
-const FILE_SYSTEM_NAME: &str = "LocalHost.FileSystem";
 /// System-wide address for the Genesis actor, can be addressed through the `FindActorByName` system call.
-const GENESIS_NAME: &str = "LocalHost.Genesis";
-/// System-wide address for the Terminal actor, can be addressed through the `FindActorByName` system call.
-const TERMINAL_NAME: &str = "LocalHost.Terminal";
+const GENESIS_NAME: &str = "Local.Host.Genesis";
 
 /// The name of an actor that cannot be looked up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,7 +19,7 @@ pub enum NameError {
     InvalidCharacter,
 }
 
-/// A short ASCII actor name such as `terminal` or `console-driver`.
+/// A short ASCII actor name.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Name {
     bytes: [u8; MAXIMUM_NAME_BYTE_COUNT],
@@ -39,28 +33,10 @@ impl Name {
         length: 0,
     };
 
-    /// The name of the Console actor.
-    pub const CONSOLE: Self = match Self::new(CONSOLE_NAME) {
-        Ok(name) => name,
-        Err(_) => panic!("CONSOLE_NAME is not a valid name"),
-    };
-
-    /// The name of the File-System actor.
-    pub const FILE_SYSTEM: Self = match Self::new(FILE_SYSTEM_NAME) {
-        Ok(name) => name,
-        Err(_) => panic!("FILE_SYSTEM_NAME is not a valid name"),
-    };
-
     /// The name of the Genesis actor.
     pub const GENESIS: Self = match Self::new(GENESIS_NAME) {
         Ok(name) => name,
         Err(_) => panic!("GENESIS_NAME is not a valid name"),
-    };
-
-    /// The name of the Terminal actor.
-    pub const TERMINAL: Self = match Self::new(TERMINAL_NAME) {
-        Ok(name) => name,
-        Err(_) => panic!("TERMINAL_NAME is not a valid name"),
     };
 
     /// Validates an actor name containing 1..=32 bytes of `[A-Za-z0-9._-]`.
